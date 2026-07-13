@@ -1,0 +1,262 @@
+# Jino OS v2.1 - Easy Server Installer Guide
+## Как удобно устанавливать сервера в Jino OS
+
+Jino OS теперь имеет полноценный пакетный менеджер `jpkg` и менеджер серверов `srv` - как `apt` + `systemctl` + `docker` вместе, но супер просто.
+
+### Концепция
+- Все сервера - это просто папки в JinoFS (/www, /apps/*) + конфиг в /etc/servers/*.json
+- Реальный HTTP сервер запускается на указанном порту из /tmp/jino_runtime/<name>/ (реальная FS)
+- API endpoints автоматически: /api/status, /api/jdb, /api/files, /api/echo?msg=hi
+- JinoDB встроена - сервера могут читать/писать в базу
+
+### 1. Список пакетов
+```bash
+jpkg list
+jpkg list web        # фильтр по категории web
+jpkg list database
+jpkg search nginx
+jpkg search api
+jpkg info nginx
+```
+
+Доступные пакеты (18):
+- nginx (8080) - static web
+- apache (8081)
+- jino-web (80) - default
+- file-server (8000) - file sharing
+- api-server (3000) - REST API + JinoDB
+- python-api (5000) - Flask-like
+- nodejs (3001) - Express-like
+- php-server (8082)
+- wordpress (8083) - depends php+mysql
+- mysql (3306), postgres (5432), redis (6379)
+- chat-server (9000) - WebSocket chat
+- game-server (7777), minecraft-server (25565)
+- templates: static, express, flask
+
+### 2. Установка сервера - 1 команда
+
+```bash
+# Базовый синтаксис
+jpkg install <package> [--port PORT] [--name NAME] [--root /path]
+
+# Примеры
+jpkg install nginx
+jpkg install nginx --port 8080 --name myweb
+jpkg install nginx --port 8080 --name myweb --root /www/myweb
+
+jpkg install api-server --port 3000
+jpkg install wordpress --port 8083 --name blog
+jpkg install mysql
+jpkg install file-server --port 8000 --root /home/user
+jpkg install chat-server --port 9000
+```
+
+Что происходит при install:
+1. Проверяет зависимости (например wordpress -> php-server + mysql) и ставит их
+2. Создает папку в JinoFS (/www/myweb или указанную)
+3. Генерирует index.html с информацией о сервере
+4. Создает конфиг /etc/servers/myweb.json
+5. Регистрирует в /tmp/jino_servers_db.json
+
+### 3. Управление серверами (srv)
+
+```bash
+srv list                          # список всех установленных
+srv ls
+
+srv start nginx                   # запустить реальный HTTP сервер на порту из конфига
+srv start --all                   # запустить все
+srv stop nginx
+srv stop --all
+srv restart nginx
+srv status                        # статус всех
+srv status nginx                  # подробно + logs
+srv logs nginx                    # логи
+srv delete nginx                  # удалить (остановит если running)
+srv info nginx                    # конфиг json
+
+# Быстрый старт - install + start за 1 команду
+srv quick nginx
+srv quick api-server --port 3000
+srv quick wordpress --port 8083
+```
+
+После `srv start nginx`:
+- Реальный ThreadingHTTPServer слушает на 127.0.0.1:8080
+- Файлы берутся из /tmp/jino_runtime/nginx/ (скопированы из JinoFS /www)
+- Доступен по http://localhost:8080/
+- API: http://localhost:8080/api/status, /api/jdb, /api/files
+
+Проверка:
+```bash
+curl http://localhost:8080/
+curl http://localhost:8080/api/status
+curl http://localhost:8080/api/jdb
+wget http://localhost:8080/ -O /tmp/page.html
+```
+
+### 4. Мастер создания сервера (wizard)
+
+Интерактивный мастер - задает вопросы:
+
+```bash
+srv new
+```
+
+Пример сессии:
+```
+=== Server Wizard ===
+Name (myblog): myblog
+Templates: static, api-server, file-server, nodejs, wordpress, chat-server, mysql, redis
+Template [static]: api-server
+Port [8080]: 3000
+Root [/www/myblog]: /apps/myblog
+Creating...
+Created!
+Start now? Y/n: y
+Started myblog on http://localhost:3000
+```
+
+### 5. Быстрый деплой любой папки
+
+```bash
+deploy <path> --port PORT --name NAME
+serve <path> --port PORT
+web <path>
+
+# Примеры
+deploy . --port 8000 --name quicksite
+deploy /www --port 9000 --name mysite
+deploy /home/user/docs --port 8001 --name docs
+
+# После этого
+srv list
+curl http://localhost:9000/
+```
+
+Deploy:
+- Берет указанную папку из JinoFS
+- Создает сервер с типом static на указанном порту
+- Сразу запускает
+- Идеально для быстрого шаринга
+
+### 6. Примеры сценариев
+
+#### Статический сайт
+```bash
+mkdir /www/mysite
+echo "<h1>My Site</h1>" > /www/mysite/index.html
+jpkg install nginx --name mysite --port 8080 --root /www/mysite
+srv start mysite
+# http://localhost:8080/
+```
+
+#### API сервер с JinoDB
+```bash
+jpkg install api-server --port 3000 --name myapi
+srv start myapi
+
+# В другом терминале (или той же консоли)
+curl http://localhost:3000/api/status
+curl http://localhost:3000/api/jdb
+curl http://localhost:3000/api/echo?msg=hello
+
+# Запись в DB
+jdb set users 100
+curl http://localhost:3000/api/jdb  # увидишь users
+
+# POST
+curl -X POST http://localhost:3000/api/jdb -d '{"newkey":"newval"}'
+```
+
+#### WordPress (симуляция)
+```bash
+jpkg install wordpress --port 8083
+srv start wordpress
+# http://localhost:8083/
+# Зависимости mysql и php-server ставятся автоматом
+```
+
+#### File sharing
+```bash
+jpkg install file-server --port 8000 --root /home/user
+srv start file-server
+# http://localhost:8000/ - список файлов /home/user
+```
+
+#### Чат сервер
+```bash
+jpkg install chat-server --port 9000
+srv start chat-server
+# http://localhost:9000/ - простой чат
+```
+
+#### Несколько серверов одновременно
+```bash
+jpkg install nginx --port 8080 --name web1
+jpkg install api-server --port 3000 --name api1
+jpkg install file-server --port 8000 --name files
+
+srv start --all
+srv list
+# Теперь 3 сервера на разных портах
+
+srv logs web1
+srv logs api1
+```
+
+### 7. Где лежат файлы
+
+- Виртуальная FS (JinoFS, в RAM + persist /tmp/jino_fs_persist.json):
+  - /www, /www/<server>/index.html - сайты
+  - /apps, /home/user - пользовательские
+  - /etc/servers/<name>.json - конфиг сервера
+  - /db - JinoDB файлы
+
+- Реальная FS (для HTTP runtime):
+  - /tmp/jino_runtime/<server>/ - скопированные файлы для отдачи
+  - /tmp/jino_servers_db.json - список серверов
+
+- Репо:
+  - /home/user/JinoOS/packages/repo.json - 18 пакетов
+  - /home/user/JinoOS/templates/ - шаблоны
+
+### 8. Полезные команды после установки
+
+```bash
+# Посмотреть что в папке сервера
+ls /www/mysite
+cat /www/mysite/index.html
+
+# Отредактировать сайт на лету
+edit /www/mysite/index.html
+# потом
+srv restart mysite
+# или пересохранит автоматом при старте (копирует из JinoFS в real)
+
+# Логи
+srv logs mysite
+srv status mysite
+
+# Остановить все, удалить
+srv stop --all
+srv delete mysite
+```
+
+### 9. Безопасность и порты
+
+- Сервера слушают только на 127.0.0.1 (localhost), не на 0.0.0.0
+- Проверка порта: если порт занят, скажет "Port in use"
+- Можно ставить один и тот же пакет несколько раз с разными именами и портами:
+  `jpkg install nginx --name site1 --port 8080`
+  `jpkg install nginx --name site2 --port 8081`
+
+### 10. Troubleshooting
+
+- Port in use: `srv list` покажет кто занял, `srv stop <name>` или выбери другой порт `--port`
+- 404 Not Found: проверь `ls /www/<name>` и `cat /www/<name>/index.html`
+- Сервер не стартует: `srv logs <name>` и `srv status <name>`
+- Перезапустить все: `srv restart <name>` или `srv stop --all && srv start --all`
+
+Вот и все! Теперь установка серверов в Jino - это 1 команда.

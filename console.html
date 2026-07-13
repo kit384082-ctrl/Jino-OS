@@ -1,0 +1,198 @@
+# Полный справочник ошибок Jino OS v2.2
+## 23 кода JNO-001 ... JNO-023 с полными объяснениями
+
+Каждая ошибка в Jino теперь показывается так:
+
+```
+┌─ ОШИБКА JNO-001: File not found / Файл не найден
+│ Сообщение: Указанный файл не существует в JinoFS
+│ Контекст: cat /nope.txt файл не найден
+│ Причина: Путь неверный, файл удален, опечатка
+│ Решение: Проверь ls, find / -name *.txt
+│ Пример: cat /nope.txt -> JNO-001. Правильно: ls /, затем cat /readme.txt
+└─
+```
+
+### Команда для просмотра
+
+```bash
+errors              # все 23 ошибки кратко
+errors JNO-001      # подробно одну
+errors 001          # тоже подробно
+man curl            # справка curl
+curl --help         # справка curl
+```
+
+### Полный список
+
+#### JNO-001 File not found / Файл не найден
+- **Когда:** cat, bat, head, tail, cp, mv, edit несуществующего файла
+- **Сообщение:** Указанный файл не существует в JinoFS
+- **Причина:** Опечатка, файл удален, не в той папке (pwd), путь неверный
+- **Решение:** ls покажет файлы в текущей папке, ls / - в корне, find / -name *часть* - поиск, pwd - где ты
+- **Пример:** `cat /nope.txt` -> JNO-001. Правильно: `ls /`, `ls /www`, `cat /www/index.html`
+- **Код в Python:** `self.fs.read(path) is None and not is_dir`
+
+#### JNO-002 Directory not found / Папка не найдена
+- **Когда:** cd, ls, tree, du в несуществующую папку
+- **Причина:** Папка не создана, опечатка, cd без mkdir
+- **Решение:** mkdir /path для создания, ls / для проверки, cd /home/user для дома
+- **Пример:** `cd /nosuch` -> JNO-002. Сделай `mkdir /nosuch`, затем `cd /nosuch`
+
+#### JNO-003 Is a directory / Это папка, а не файл
+- **Когда:** cat /www, bat /home, head /etc (папка вместо файла)
+- **Причина:** cat ожидает файл, а дали папку
+- **Решение:** ls /www покажет файлы внутри, затем cat /www/index.html
+- **Пример:** `cat /www` -> JNO-003. Правильно: `ls /www`, `cat /www/index.html`
+
+#### JNO-004 Not a directory / Не папка
+- **Когда:** cd /readme.txt, cd в файл
+- **Причина:** cd только для папок, а дали файл
+- **Решение:** cat для файлов, cd только для папок, stat для проверки типа
+- **Пример:** `cd /readme.txt` -> JNO-004. Правильно: `cat /readme.txt`
+
+#### JNO-005 Permission denied / Отказано в доступе
+- **Когда:** rm /, rmdir /, удаление системных файлов
+- **Причина:** Попытка удалить корень или критический файл
+- **Решение:** Не трогай /, используй rm -r /path для конкретной папки, chmod для прав
+- **Пример:** `rmdir /` -> JNO-005. Нельзя удалять корень
+
+#### JNO-006 File exists / Файл уже существует
+- **Когда:** mkdir существующей папки, srv create существующего сервера, jpkg install существующего
+- **Причина:** Имя занято
+- **Решение:** ls проверит, rm удалит старое, --name другое имя, srv delete
+- **Пример:** `mkdir /www` -> JNO-006. /www уже есть. Сделай `mkdir /www/newsite`
+
+#### JNO-007 Directory not empty / Папка не пуста
+- **Когда:** rmdir /www когда там файлы, rm без -r для папки
+- **Причина:** Папка не пуста, без -r нельзя
+- **Решение:** ls /path, rm /path/file, rm -r /path для рекурсивного
+- **Пример:** `rmdir /www` -> JNO-007. Сделай `rm -r /www` или `ls /www`
+
+#### JNO-008 Command not found / Команда не найдена
+- **Когда:** опечатка, команда из GUI в консоли, неизвестная команда
+- **Причина:** Нет такой команды
+- **Решение:** cmds - список всех 100+ команд, help - справка, man <cmd>
+- **Пример:** `sl` -> JNO-008. Попробуй `ls`, `cowsay`
+
+#### JNO-009 Invalid arguments / Неверные аргументы
+- **Когда:** cp без второго аргумента, mkdir без имени, jpkg без пакета
+- **Причина:** Не хватает аргументов или неверные флаги
+- **Решение:** man <cmd>, cmd без аргументов, --help
+- **Пример:** `cp /readme.txt` -> JNO-009. Нужно: `cp src dst`. Пример: `cp /readme.txt /tmp/`
+
+#### JNO-010 Port already in use / Порт занят
+- **Когда:** srv start когда порт занят другим сервером, jpkg install на занятый порт
+- **Причина:** Два сервера на одном порту, порт занят системой, сервер не остановлен
+- **Решение:** srv list покажет занятые порты, srv stop <name> освободит, --port 8081 другой порт
+- **Пример:** `srv start nginx` когда 8080 занят -> JNO-010. Сделай `srv list`, `srv stop старый`, или `jpkg install nginx --port 8081`
+
+#### JNO-011 Server not found / Сервер не найден
+- **Когда:** srv start/start/stop/status несуществующего сервера
+- **Причина:** Опечатка, сервер не устанавливался, удален
+- **Решение:** srv list - все установленные, jpkg list - доступные, jpkg install <pkg>
+- **Пример:** `srv start myblog` -> JNO-011 если нет. Сделай `srv list`, затем `jpkg install nginx --name myblog`
+
+#### JNO-012 Package not found / Пакет не найден
+- **Когда:** jpkg install несуществующего пакета, опечатка
+- **Причина:** Пакета нет в repo.json, опечатка, устаревший репо
+- **Решение:** jpkg list покажет 18 пакетов, jpkg search <term>, jpkg update
+- **Пример:** `jpkg install ngnix` -> JNO-012 (опечатка). Правильно: `jpkg install nginx`. Попробуй `jpkg search nginx`
+
+#### JNO-013 Server already running / Сервер уже запущен
+- **Когда:** srv start уже запущенного
+- **Причина:** Дважды start
+- **Решение:** srv status <name>, srv restart <name>, srv stop затем start
+- **Пример:** `srv start nginx` когда running -> JNO-013. Сделай `srv restart nginx`
+
+#### JNO-014 Server not running / Сервер не запущен
+- **Когда:** srv stop на остановленном
+- **Причина:** Уже остановлен
+- **Решение:** srv status, srv list покажет running/stopped
+- **Пример:** `srv stop nginx` когда stopped -> JNO-014. Проверь `srv status nginx`
+
+#### JNO-015 Invalid port / Неверный порт
+- **Когда:** --port abc, --port 0, --port 99999
+- **Причина:** Порт должен быть числом 1-65535
+- **Решение:** Используй 8000-9000 для тестов, 3000, 5000, 8080-8089
+- **Пример:** `srv create my --port abc` -> JNO-015. Правильно: `--port 8080`
+
+#### JNO-016 Invalid path / Неверный путь
+- **Когда:** cd '', пустой путь, недопустимые символы
+- **Причина:** Путь пуст или с недопустимыми символами
+- **Решение:** Абсолютные пути: /www, /home/user/docs
+- **Пример:** `cd ''` -> JNO-016. Правильно: `cd /home/user`
+
+#### JNO-017 Connection refused / Соединение отклонено (curl)
+- **Когда:** curl http://localhost:8080/ когда сервер не запущен, порт не слушает
+- **Причина:** Сервер не запущен, неверный порт, firewall, сервер упал
+- **Решение:** srv list покажет running, srv start <name>, проверь порт: curl http://localhost:PORT/. Убедись что сервер на 127.0.0.1
+- **Пример:** `curl http://localhost:8080/` когда stopped -> JNO-017. Сделай `srv start myserver`
+- **curl опции:** `curl -v` для verbose, `--connect-timeout 10`
+
+#### JNO-018 Timeout / Истекло время ожидания (curl)
+- **Когда:** curl на медленный сервер, сервер завис, большой файл
+- **Причина:** Сервер не ответил за timeout (default 5с)
+- **Решение:** Попробуй снова, увеличь timeout: curl --connect-timeout 10 <url>. srv logs, srv restart
+- **Пример:** `curl http://slow.site/` -> JNO-018. Попробуй `curl --connect-timeout 10 http://slow.site/`
+
+#### JNO-019 Invalid URL / Неверный URL (curl)
+- **Когда:** curl без http://, опечатка, пробелы в URL, неподдерживаемый протокол
+- **Причина:** Нет схемы, неверный формат
+- **Решение:** Полный URL: http://localhost:8080/, https://example.com/api. Для файлов: file:///www/index.html или cat /www/index.html
+- **Пример:** `curl localhost:8080` -> JNO-019? Лучше `curl http://localhost:8080/`. Или `curl file:///www/index.html` для JinoFS
+
+#### JNO-020 HTTP error / HTTP ошибка (curl)
+- **Когда:** Сервер вернул 4xx или 5xx: 404 Not Found, 403 Forbidden, 500 Internal Error
+- **Причина:** 404 - файл не найден на сервере, 403 - доступ запрещен, 500 - ошибка сервера
+- **Решение:** Проверь путь: /api/status существует, /nope нет. srv logs покажет логи. Для 500 - перезапусти сервер
+- **Пример:** `curl http://localhost:8080/nope` -> HTTP 404 JNO-020. Попробуй `curl http://localhost:8080/api/status`
+
+#### JNO-021 Write error / Ошибка записи
+- **Когда:** echo > /, запись в корень, диск полон (симуляция), неверный путь
+- **Причина:** Нельзя писать в / напрямую, путь неверный
+- **Решение:** Пиши в файл: echo hi > /tmp/hi.txt, проверь df
+- **Пример:** `echo hi > /` -> JNO-021. Пиши в `/tmp/hi.txt`
+
+#### JNO-022 JDB key not found / Ключ не найден в базе
+- **Когда:** jdb get несуществующего ключа
+- **Причина:** Ключа нет в JinoDB
+- **Решение:** jdb list покажет все ключи, jdb set <k> <v> для создания
+- **Пример:** `jdb get nokey` -> JNO-022. Сделай `jdb list`, затем `jdb set nokey value`
+
+#### JNO-023 Invalid method / Неверный HTTP метод (curl)
+- **Когда:** curl -X с неподдерживаемым методом
+- **Причина:** Методы: GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS. Опечатка
+- **Решение:** Используй: curl -X GET, curl -X POST -d data
+- **Пример:** `curl -X FOOBAR http://...` -> JNO-023. Правильно: `-X POST`
+
+### Как вызвать ошибки для теста
+
+```bash
+cat /nope             # JNO-001
+cd /nosuch            # JNO-002
+cat /www              # JNO-003
+cd /readme.txt        # JNO-004
+rmdir /               # JNO-005
+mkdir /www            # JNO-006
+rmdir /www            # JNO-007 без -r
+sl                    # JNO-008
+cp /a                 # JNO-009
+# JNO-010 - занять порт:
+jpkg install nginx --port 18080 --name a
+srv start a
+jpkg install nginx --port 18080 --name b
+srv start b  # JNO-010
+srv start nosuch123   # JNO-011
+jpkg install nosuch   # JNO-012
+srv start a дважды    # JNO-013
+srv stop b когда не running # JNO-014
+srv create x --port abc # JNO-015
+cd ''                 # JNO-016
+curl http://localhost:19999/ # JNO-017
+curl noturl           # JNO-019
+curl http://localhost:18080/nope # JNO-020
+echo hi > /           # JNO-021
+jdb get nokey         # JNO-022
+curl -X FOOBAR http://localhost:8080/ # JNO-023
+```

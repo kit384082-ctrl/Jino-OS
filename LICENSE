@@ -1,21 +1,77 @@
-MIT License
+# Contributing to Jino OS
 
-Copyright (c) 2026 kit384082-ctrl
+Thanks for interested in Jino OS v3.1 Hybrid!
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+## Quick start
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+```bash
+git clone https://github.com/yourusername/JinoOS.git
+cd JinoOS
+python3 tools/jino_console.py
+# Select language 1) EN
+# help
+# gui --browser # opens browser GUI
+```
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Open `emulator/index.html` in browser for Windows-like GUI + Console hybrid.
+
+## Project structure
+
+```
+JinoOS/
+├── tools/jino_console.py      # Main OS - Python console + server manager + curl + errors + gui launcher
+├── lang/en.json, ru.json      # Language files
+├── packages/repo.json         # 18 server packages repo
+├── emulator/index.html        # Hybrid Windows-like GUI + Terminal (console alive)
+├── emulator/console_server.html # Pure console server edition
+├── src/boot/boot.asm          # Bootloader 16->32 bit
+├── src/kernel/                # JinoKernel C
+├── src/drivers/               # VGA, keyboard
+├── src/shell/                 # JinoSH
+├── src/gui/                   # JinoWM Window Manager v3.1 Hybrid (console remains)
+├── src/fullstack/             # JinoDB, JinoServer
+├── docs/                      # SERVERS.md, CURL.md, ERRORS.md, architecture.md
+├── LICENSE                    # MIT - easy permissive
+├── README.md                  # GitHub README
+└── Makefile
+```
+
+## How to add feature
+
+1. Fork repo
+2. Create branch: `git checkout -b feature/my-feature`
+3. Edit `tools/jino_console.py` for console logic, or `emulator/index.html` for GUI
+4. Test: `python3 tools/jino_console.py` -> `jpkg list`, `srv quick nginx`, `curl http://localhost:8080/`, `errors`, `lang ru`, `gui`
+5. Commit: `git commit -m "Add my feature"`
+6. PR
+
+## Code style
+
+- Console: Keep console primary, GUI optional - never remove console!
+- Language: Default EN, support EN/RU via `lang/` and `t()` function
+- Errors: Always use `print_error("JNO-XXX", context, extra)` with full explanation
+- Servers: Use ServerManager, real ThreadingHTTPServer on 127.0.0.1, not just simulation
+- GUI: Windows-like but console alive inside Terminal app
+
+## Adding server package
+
+Edit `packages/repo.json`:
+```json
+{
+  "name": "myserver",
+  "version": "1.0",
+  "description": "My cool server",
+  "type": "server",
+  "port": 8888,
+  "root": "/www/myserver"
+}
+```
+Then `jpkg list` will show it.
+
+## Adding language
+
+Create `lang/<code>.json` copy of en.json and translate. Then `lang <code>` will work.
+
+## License
+
+MIT - easy, permissive, commercial use allowed. Keep copyright.

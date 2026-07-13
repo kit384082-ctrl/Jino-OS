@@ -1,0 +1,78 @@
+# Архитектура Jino OS
+
+## 1. Загрузка
+
+1. BIOS загружает 512 байт MBR с диска (boot.asm)
+2. Bootloader включает A20, загружает GDT
+3. Переход в 32-bit Protected Mode
+4. Загрузка ядра по адресу 0x100000 (1MB)
+5. Передача управления kernel_main()
+
+## 2. Ядро (JinoKernel)
+
+Язык: C (freestanding) + ASM
+Размер: ~64KB в начале
+
+Подсистемы:
+- `memory.c` - физический/виртуальный менеджер, куча, page allocator
+- `idt.c` - таблица прерываний
+- `isr.c` - обработчики прерываний
+- `fs/jinofs.c` - файловая система JinoFS v1
+- `process.c` - планировщик Round-Robin
+
+JinoFS структура:
+```
+Superblock (512b) | Bitmap | Inode Table | Data Blocks
+- имя файла до 32 символов
+- размер файла до 16MB
+- тип: файл/папка/исп.файл
+```
+
+## 3. Драйверы
+
+- VGA 320x200 256 colors + текстовый 80x25
+- PS/2 Клавиатура (scancode set 1)
+- ATA PIO (чтение секторов)
+- PIT Timer 100Hz
+- PC Speaker
+
+## 4. JinoSH
+
+Собственный шелл, парсер команд. Все команды - встроенные для скорости.
+Поддержка пайпов планируется в v0.5
+
+## 5. JinoGUI (Jino Window Manager)
+
+Архитектура как в Windows 3.1 + немного из BeOS:
+
+- Композитинг на CPU
+- Оконная система: Window {x,y,w,h, title, flags, buffer, proc}
+- События: mouse, keyboard, paint, close
+- Виджеты: Button, Label, Input, Terminal, Canvas
+- Рабочий стол + панель задач + меню Пуск "Jino"
+
+API для приложений:
+```c
+int win = jgui_create_window("My App", 100,100, 320,240);
+jgui_draw_rect(win, 10,10,100,30, COLOR_BLUE);
+jgui_on_click(win, my_handler);
+```
+
+## 6. FullStack Слой
+
+Это фишка Jino:
+
+- JinoNet - TCP/IP стек (внутри ядра)
+- JinoServer - http сервер на порту 80, отдаёт файлы из /www
+- JinoDB - key-value база встроенная в FS: jdb_set("user:1", "Jino")
+- JinoScript - свой скриптовый язык .js файл (похож на JS)
+
+Пример JinoApp:
+```js
+// /apps/hello.japp
+window.create("Hello Jino");
+server.route("/api/hi", () => "Hello from Jino OS!");
+db.set("visits", db.get("visits")+1);
+```
+
+Будущее: v1.0 будет с сетью и портами DOOM, v2.0 - с поддержкой ELF и GCC внутри ОС.

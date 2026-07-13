@@ -1,0 +1,29 @@
+#ifndef WINDOW_H
+#define WINDOW_H
+// Window management for JinoWM Hybrid
+typedef enum {
+    WIN_TYPE_TERMINAL,   // Console remains! This window embeds JinoSH
+    WIN_TYPE_FILEMGR,
+    WIN_TYPE_BROWSER,
+    WIN_TYPE_EDITOR,
+    WIN_TYPE_SETTINGS,
+    WIN_TYPE_SERVER
+} win_type_t;
+
+typedef struct {
+    int id;
+    win_type_t type;
+    char title[32];
+    int x,y,w,h;
+    int minimized;
+    int maximized;
+} jwindow_t;
+
+int window_create(win_type_t type, const char* title, int x,int y,int w,int h);
+void window_close(int id);
+void window_minimize(int id);
+void window_maximize(int id);
+void window_focus(int id);
+void window_list();
+
+#endif

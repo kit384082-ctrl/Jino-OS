@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Jino OS v2.1 Console Server Edition - No GUI + Easy Server Installer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#0f0;font-family:'Courier New', monospace; height:100vh; display:flex; flex-direction:column;}
+#header{background:#000; border-bottom:1px solid #0f0; padding:6px 10px; display:flex; justify-content:space-between; font-size:11px;}
+#terminal{flex:1; padding:10px; overflow:auto; white-space:pre-wrap; font-size:13px; line-height:1.4;}
+#input-line{display:flex; background:#000; border-top:1px solid #0f0; padding:6px 10px; align-items:center;}
+#prompt{color:#ff0; margin-right:8px; white-space:nowrap; font-size:12px;}
+#cmd{flex:1; background:transparent; border:none; color:#0f0; font-family:inherit; font-size:13px; outline:none;}
+.line{margin:2px 0;}
+.sys{color:#0ff}
+.err{color:#f55}
+.cmd{color:#ff0}
+.dim{color:#888}
+.green{color:#0f0}
+.yellow{color:#ff0}
+.cyan{color:#0ff}
+.box{border:1px solid #0f0; padding:8px; margin:8px 0;}
+.btn{background:#000; color:#0f0; border:1px solid #0f0; padding:2px 8px; cursor:pointer; font-family:monospace;}
+.btn:hover{background:#0f0; color:#000;}
+</style>
+</head>
+<body>
+<div id="header">
+<span>Jino OS v2.1 CONSOLE SERVER EDITION | 100+ cmds | jpkg + srv | No GUI | Easy Server Installer</span>
+<span id="clock"></span>
+</div>
+<div id="terminal"></div>
+<div id="input-line"><span id="prompt">jino@jino-pc:/$</span><input id="cmd" autocomplete="off" autofocus></div>
+
+<script>
+let FS = {
+"/readme.txt": "Jino OS v2.1 Console Server Edition\njpkg list - packages\nsrv list - servers\njpkg install nginx --port 8080\nsrv start nginx\n",
+"/www/index.html": "<h1>JinoServer v2.1 Default</h1><p>Default server :80</p><p><a href='/api/status'>/api/status</a></p>"
+};
+let CWD="/";
+let JDB={visits:"1", user:"jino", hostname:"browser-pc"};
+let SERVERS={"default":{name:"default", type:"static", port:80, root:"/www", status:"stopped"}};
+let REPO=[
+{name:"nginx", ver:"1.25", port:8080, type:"server", desc:"Static web server"},
+{name:"api-server", ver:"2.0", port:3000, type:"server", desc:"REST API + JinoDB"},
+{name:"file-server", ver:"1.0", port:8000, type:"server", desc:"File sharing"},
+{name:"wordpress", ver:"6.4", port:8083, type:"app", desc:"WordPress CMS"},
+{name:"mysql", ver:"8.0", port:3306, type:"database", desc:"MySQL over JinoDB"},
+{name:"chat-server", ver:"1.0", port:9000, type:"server", desc:"Chat"},
+{name:"static", ver:"1.0", port:8080, type:"template", desc:"Template static"}
+];
+
+let historyArr=[], histIdx=-1;
+const term=document.getElementById('terminal');
+const input=document.getElementById('cmd');
+const promptEl=document.getElementById('prompt');
+
+function print(t,cls=""){ const d=document.createElement('div'); d.className='line '+cls; d.textContent=t; term.appendChild(d); term.scrollTop=term.scrollHeight; }
+function printHTML(html){ const d=document.createElement('div'); d.className='line'; d.innerHTML=html; term.appendChild(d); term.scrollTop=term.scrollHeight; }
+function norm(p){ if(!p) return CWD; if(p.startsWith("/")) return p; let comb=(CWD+"/"+p).replace(/\/+/g,"/"); let parts=comb.split("/"); let stack=[]; for(let part of parts){ if(part==""||part==".") continue; if(part=="..") stack.pop(); else stack.push(part);} return "/"+stack.join("/"); }
+function listDir(path){ path=norm(path); let dirs=new Set(), files=[]; for(let f in FS){ if(f.startsWith(path+"/")|| (path=="/" && f.startsWith("/"))){ let rel=path=="/" ? f.slice(1) : f.slice(path.length+1); if(!rel) continue; let parts=rel.split("/"); if(parts.length==1) files.push(parts[0]); else dirs.add(parts[0]); } } return {dirs:[...dirs], files}; }
+function updatePrompt(){ promptEl.textContent=`jino@${JDB.hostname}:${CWD}$`; }
+
+function boot(){
+  print("Jino OS v2.1 Console Server Edition Boot...", "sys");
+  print("[OK] Kernel 2.1 loaded", "sys");
+  print(`[OK] JinoFS v2 ${Object.keys(FS).length} files`, "sys");
+  print(`[OK] Server Manager ${Object.keys(SERVERS).length} servers`, "sys");
+  print(`[OK] Repo ${REPO.length} packages (browser demo)`, "sys");
+  print(`[OK] No GUI mode - console + easy server installer`, "sys");
+  print(""); print(FS["/readme.txt"]); print("");
+  print("Quick start: jpkg list | jpkg install nginx --port 8080 --name myweb | srv list | srv start myweb | srv new | deploy . --port 9000", "dim");
+  print(""); updatePrompt();
+}
+
+function cmd_jpkg(args){
+  let sub=args[0];
+  if(sub=="list"){
+    print(`Repo - ${REPO.length} packages`); print("NAME PORT TYPE DESC");
+    REPO.forEach(p=> print(`${p.name.padEnd(15)} ${String(p.port).padEnd(5)} ${p.type.padEnd(10)} ${p.desc}`));
+  } else if(sub=="search"){
+    let term=args[1]||""; let res=REPO.filter(p=> p.name.includes(term) || p.desc.toLowerCase().includes(term.toLowerCase()));
+    print(`Search '${term}' ${res.length} found`); res.forEach(p=> print(`${p.name} - ${p.desc}`));
+  } else if(sub=="install"){
+    let name=args[1]; if(!name){ print("Usage: jpkg install <pkg> [--port PORT] [--name NAME]"); return; }
+    let portArg=args.indexOf("--port"); let port=portArg>=0? parseInt(args[portArg+1]) : (REPO.find(p=>p.name==name)?.port||8080);
+    let nameArg=args.indexOf("--name"); let srvName=nameArg>=0? args[nameArg+1] : name;
+    let rootArg=args.indexOf("--root"); let root=rootArg>=0? args[rootArg+1] : `/www/${srvName}`;
+    if(SERVERS[srvName]){ print(`Server ${srvName} exists`, "err"); return; }
+    SERVERS[srvName]={name:srvName, type:name, port:port, root:root, status:"stopped"};
+    FS[root+"/index.html"]=`<h1>${srvName} - ${name}</h1><p>Port ${port} Root ${root}</p><p>Installed via jpkg browser demo</p><p><a href='/api/status'>/api/status</a></p>`;
+    print(`Installed ${name} as '${srvName}' on :${port} root ${root}. Run 'srv start ${srvName}'`, "sys");
+  } else if(sub=="info"){
+    let pkg=REPO.find(p=>p.name==args[1]); if(pkg) print(JSON.stringify(pkg,null,2)); else print("Not found", "err");
+  } else {
+    print("Usage: jpkg list|search|install|info");
+  }
+}
+
+function cmd_srv(args){
+  let sub=args[0];
+  if(sub=="list"||sub=="ls"){
+    print("NAME TYPE PORT STATUS ROOT URL");
+    Object.values(SERVERS).forEach(s=> print(`${s.name.padEnd(12)} ${s.type.padEnd(10)} ${String(s.port).padEnd(5)} ${s.status.padEnd(8)} ${s.root.padEnd(15)} http://localhost:${s.port}`));
+  } else if(sub=="create"){
+    let name=args[1]; if(!name){ print("Usage: srv create <name> --template static --port 8080 --root /www"); return;}
+    let tmplIdx=args.indexOf("--template"); let tmpl=tmplIdx>=0? args[tmplIdx+1] : "static";
+    let portIdx=args.indexOf("--port"); let port=portIdx>=0? parseInt(args[portIdx+1]) : 8080;
+    let rootIdx=args.indexOf("--root"); let root=rootIdx>=0? args[rootIdx+1] : `/www/${name}`;
+    if(SERVERS[name]){ print("Exists", "err"); return;}
+    SERVERS[name]={name, type:tmpl, port, root, status:"stopped"};
+    FS[root+"/index.html"]=`<h1>${name} - ${tmpl}</h1><p>Port ${port}</p>`;
+    print(`Created ${name} template=${tmpl} port=${port} root=${root}`, "sys");
+  } else if(sub=="start"){
+    let name=args[1]; if(!name){ print("Usage: srv start <name>"); return;}
+    let srv=SERVERS[name]; if(!srv){ print("Not found", "err"); return;}
+    srv.status="running"; print(`Started ${name} on http://localhost:${srv.port} (simulated in browser, real in python)`, "sys");
+  } else if(sub=="stop"){
+    let name=args[1]; if(SERVERS[name]){ SERVERS[name].status="stopped"; print(`Stopped ${name}`); } else print("Not found","err");
+  } else if(sub=="status"){
+    let name=args[1];
+    if(name){ let s=SERVERS[name]; if(s) print(JSON.stringify(s,null,2)); else print("Not found","err"); }
+    else cmd_srv(["list"]);
+  } else if(sub=="logs"){
+    print(`Logs for ${args[1]||"default"} (simulated): GET / 200, GET /api/status 200`);
+  } else if(sub=="delete"||sub=="remove"){
+    let name=args[1]; if(SERVERS[name]){ delete SERVERS[name]; print(`Deleted ${name}`);} else print("Not found","err");
+  } else if(sub=="new"){
+    print("=== Wizard (browser) ==="); let name=prompt("Server name:"); if(!name) return;
+    let tmpl=prompt("Template (static, api-server, file-server, wordpress...)", "static")||"static";
+    let port=parseInt(prompt("Port", "8080")||"8080");
+    let root=prompt("Root", `/www/${name}`)||`/www/${name}`;
+    if(SERVERS[name]){ print("Exists","err"); return;}
+    SERVERS[name]={name, type:tmpl, port, root, status:"stopped"};
+    FS[root+"/index.html"]=`<h1>${name}</h1><p>${tmpl} port ${port}</p>`;
+    print(`Created ${name} template=${tmpl} port=${port} root=${root}`, "sys");
+    if(confirm("Start now?")){ SERVERS[name].status="running"; print(`Started http://localhost:${port}`, "sys"); }
+  } else if(sub=="quick"){
+    let pkg=args[1]; if(!pkg){ print("Usage: srv quick <pkg>"); return;}
+    let portIdx=args.indexOf("--port"); let port=portIdx>=0? parseInt(args[portIdx+1]) : (REPO.find(p=>p.name==pkg)?.port||8080);
+    if(!SERVERS[pkg]){ SERVERS[pkg]={name:pkg, type:pkg, port, root:`/www/${pkg}`, status:"stopped"}; FS[`/www/${pkg}/index.html`]=`<h1>${pkg}</h1><p>Quick installed port ${port}</p>`; }
+    SERVERS[pkg].status="running"; print(`Quick installed and started ${pkg} on http://localhost:${port}`, "sys");
+  } else print("Unknown srv: list, create, start, stop, status, logs, delete, new, quick");
+
+}
+
+function handle(line){
+  if(!line.trim()) return;
+  historyArr.push(line); histIdx=historyArr.length;
+  printHTML(`<span class="cmd">${promptEl.textContent} ${line}</span>`);
+  let parts=line.match(/(?:[^\s"]+|"[^"]*")+/g)||[]; let args=parts.map(p=>p.replace(/^"|"$/g,"")); let cmd=args.shift()?.toLowerCase()||"";
+
+  if(cmd=="help"){ print(`Help v2.1\njpkg list | jpkg install <pkg> [--port P] [--name N]\nsrv list | srv start <name> | srv new | srv quick <pkg>\ndeploy <path> --port 8000\nls, cat, mkdir, echo, clear, ver, sysinfo, jdb`); }
+  else if(cmd=="cmds"){ print("Commands: jpkg, srv, deploy, ls, cat, mkdir, rm, echo, clear, ver, sysinfo, jdb, calc, cowsay, help"); }
+  else if(cmd=="jpkg"){ cmd_jpkg(args); }
+  else if(cmd=="srv"||cmd=="server"||cmd=="service"){ cmd_srv(args); }
+  else if(cmd=="deploy"||cmd=="serve"||cmd=="web"){
+    let path=args[0]||"."; let portIdx=args.indexOf("--port"); let port=portIdx>=0? parseInt(args[portIdx+1]) : 8000;
+    let nameIdx=args.indexOf("--name"); let name=nameIdx>=0? args[nameIdx+1] : (path.split("/").pop()||"deploy")+port;
+    if(!SERVERS[name]) SERVERS[name]={name, type:"static", port, root:norm(path), status:"running"};
+    else SERVERS[name].status="running";
+    print(`Deployed ${path} as ${name} on http://localhost:${port}`, "sys");
+  }
+  else if(cmd=="ls"||cmd=="dir"){ let p=args[0]||CWD; let {dirs, files}=listDir(p); let out=""; dirs.forEach(d=> out+=`[${d}/] `); files.forEach(f=> out+=`${f} `); print(out||"(empty)"); }
+  else if(cmd=="pwd"){ print(CWD); }
+  else if(cmd=="cd"){ let t=args[0]||"/home/user"; if(t=="..") CWD=CWD.split("/").slice(0,-1).join("/")||"/"; else CWD=norm(t); updatePrompt(); }
+  else if(cmd=="cat"){ let c=FS[norm(args[0])]; print(c||"No file"); }
+  else if(cmd=="mkdir"){ let p=norm(args[0]); FS[p+"/.keep"]=""; print(`mkdir ${p}`); }
+  else if(cmd=="rm"||cmd=="del"){ let p=norm(args[0]); if(FS[p]){ delete FS[p]; print(`Removed ${p}`);} else print("No file","err"); }
+  else if(cmd=="echo"){ let rest=line.slice(5).trim(); let redir=null; let m=rest.match(/(.*)(>>|>)(.*)/); if(m){ rest=m[1].trim(); redir=m[3].trim(); } if(redir) FS[norm(redir)]=rest+"\n"; print(rest); }
+  else if(cmd=="clear"||cmd=="cls"){ term.innerHTML=""; }
+  else if(cmd=="ver"){ print("Jino OS v2.1 Console Server Edition"); }
+  else if(cmd=="sysinfo"){ print(`Jino OS v2.1 | FS ${Object.keys(FS).length} | Servers ${Object.keys(SERVERS).length} | Repo ${REPO.length}`); }
+  else if(cmd=="jdb"){ let op=args[0]; if(op=="set"&&args[1]){ JDB[args[1]]=args.slice(2).join(" "); print(`OK ${args[1]}`);} else if(op=="get") print(JDB[args[1]]||"(nil)"); else if(op=="list") Object.entries(JDB).forEach(([k,v])=> print(`${k}=${v}`)); else print("jdb set/get/list"); }
+  else if(cmd=="calc"){ try{ print(eval(args.join(" "))); }catch(e){ print("err "+e); } }
+  else if(cmd=="cowsay"){ print(`< ${args.join(" ")||"Jino"} >`); }
+  else if(cmd=="history"){ historyArr.forEach((h,i)=> print(`${i+1} ${h}`)); }
+  else if(cmd) print(`jino: ${cmd}: not found (browser demo). Real full version in python: python3 tools/jino_console.py`, "err");
+}
+
+input.addEventListener('keydown', e=>{
+  if(e.key==="Enter"){ let v=input.value; handle(v); input.value=""; }
+  else if(e.key==="ArrowUp"){ if(histIdx>0){ histIdx--; input.value=historyArr[histIdx]; } e.preventDefault(); }
+  else if(e.key==="ArrowDown"){ if(histIdx<historyArr.length-1){ histIdx++; input.value=historyArr[histIdx]; } else { histIdx=historyArr.length; input.value=""; } }
+});
+setInterval(()=> document.getElementById('clock').textContent=new Date().toLocaleTimeString(), 1000);
+boot();
+</script>
+</body>
+</html>

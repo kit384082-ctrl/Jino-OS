@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Jino OS 1.0 Console - No GUI</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#0f0;font-family:'Courier New', monospace; height:100vh; display:flex; flex-direction:column;}
+#header{background:#000; border-bottom:1px solid #0f0; padding:6px 10px; display:flex; justify-content:space-between; font-size:12px;}
+#terminal{flex:1; padding:10px; overflow:auto; white-space:pre-wrap; font-size:14px; line-height:1.4;}
+#input-line{display:flex; background:#000; border-top:1px solid #0f0; padding:6px 10px; align-items:center;}
+#prompt{color:#ff0; margin-right:8px; white-space:nowrap;}
+#cmd{flex:1; background:transparent; border:none; color:#0f0; font-family:inherit; font-size:14px; outline:none;}
+.cursor{animation:blink 1s infinite;}
+@keyframes blink{0%,50%{opacity:1} 50.1%,100%{opacity:0}}
+.line{margin:2px 0;}
+.sys{color:#0ff}
+.err{color:#f00}
+.cmd{color:#ff0}
+.dir{color:#55f}
+.file{color:#fff}
+.dim{color:#888}
+.green{color:#0f0}
+.yellow{color:#ff0}
+.cyan{color:#0ff}
+</style>
+</head>
+<body>
+<div id="header">
+<span>Jino OS v1.0 CONSOLE EDITION - No GUI | 80+ commands | JinoFS v2 | JinoDB | JinoServer :80</span>
+<span id="clock"></span>
+</div>
+<div id="terminal"></div>
+<div id="input-line"><span id="prompt">jino@jino-pc:/$</span><input id="cmd" autocomplete="off" autofocus></div>
+
+<script>
+const FS = {
+"/readme.txt": `Jino OS v1.0 Console Edition
+============================
+NO GUI, PURE CONSOLE, 80+ commands
+
+Type 'help' or 'cmds'
+
+This is browser console edition - same as python version.
+All commands work: ls, cat, mkdir, echo, grep, jdb, server, calc, cowsay...
+`,
+"/www/index.html": "<h1>JinoServer 1.0 Console Works!</h1><p>No GUI version serving this file.</p>",
+"/home/user/notes.txt": "notes in browser console edition",
+};
+let CWD="/";
+let JDB={visits:"1", user:"jino", hostname:"browser-pc"};
+let historyArr=[]; let histIdx=-1;
+let serverRunning=false;
+
+const term=document.getElementById('terminal');
+const input=document.getElementById('cmd');
+const promptEl=document.getElementById('prompt');
+
+function print(t, cls=""){ const d=document.createElement('div'); d.className='line '+cls; d.textContent=t; term.appendChild(d); term.scrollTop=term.scrollHeight; }
+function printHTML(html){ const d=document.createElement('div'); d.className='line'; d.innerHTML=html; term.appendChild(d); term.scrollTop=term.scrollHeight; }
+
+function norm(p){
+  if(!p) return CWD;
+  if(p.startsWith("/")) return p.replace(/\/+/g,"/").replace(/\/$/,"") || "/";
+  let combined = (CWD+"/"+p).replace(/\/+/g,"/");
+  let parts=combined.split("/"); let stack=[];
+  for(let part of parts){ if(part==""||part==".") continue; if(part==".."){ stack.pop(); } else stack.push(part); }
+  return "/"+stack.join("/");
+}
+function listDir(path){
+  path=norm(path);
+  let dirs=new Set(), files=[];
+  for(let f in FS){
+    if(f.startsWith(path+"/") || (path=="/" && f.startsWith("/"))){
+      let rel = path=="/" ? f.slice(1) : f.slice(path.length+1);
+      if(!rel) continue;
+      let parts=rel.split("/");
+      if(parts.length==1) files.push(parts[0]);
+      else dirs.add(parts[0]);
+    }
+  }
+  return {dirs:[...dirs], files};
+}
+
+function boot(){
+  print("Jino OS v1.0 Console Edition Boot...", "sys");
+  print("[OK] Kernel 1.0 loaded, 32MB", "sys");
+  print("[OK] JinoFS v2 mounted ("+Object.keys(FS).length+" files)", "sys");
+  print("[OK] JinoDB ready", "sys");
+  print("[OK] No GUI mode - console only", "sys");
+  print("");
+  print(FS["/readme.txt"]);
+  print("");
+  print("Type 'help' for intro, 'cmds' for 80+ commands list", "dim");
+  print("");
+  updatePrompt();
+}
+function updatePrompt(){ promptEl.textContent=`jino@${JDB.hostname}:${CWD}$`; }
+
+function handle(line){
+  if(!line.trim()) return;
+  historyArr.push(line); histIdx=historyArr.length;
+  printHTML(`<span class="cmd">${promptEl.textContent} ${line}</span>`);
+  const parts=line.match(/(?:[^\s"]+|"[^"]*")+/g) || [];
+  let args=parts.map(p=>p.replace(/^"|"$/g,""));
+  let cmd=args.shift()?.toLowerCase() || "";
+  
+  // redirection simple
+  let redir=null, redirAppend=false, cleanArgs=[];
+  for(let i=0;i<args.length;i++){
+    if(args[i]==">" && i+1<args.length){ redir=args[i+1]; i++; }
+    else if(args[i]==">>" && i+1<args.length){ redir=args[i+1]; redirAppend=true; i++; }
+    else if(args[i].includes(">")){
+      let m=args[i].match(/(.*?)(>>|>)(.*)/);
+      if(m){ cleanArgs.push(m[1]); redir=m[3]; redirAppend=m[2]==">>"; }
+      else cleanArgs.push(args[i]);
+    } else cleanArgs.push(args[i]);
+  }
+  args=cleanArgs;
+
+  function out(text){
+    if(redir){
+      let p=norm(redir);
+      if(redirAppend) FS[p]=(FS[p]||"")+text+"\n";
+      else FS[p]=text+"\n";
+      print(`-> wrote to ${p}`, "dim");
+    } else {
+      print(text);
+    }
+  }
+
+  switch(cmd){
+    case "help":
+      print(`Jino Console Help
+FS: ls, dir, ll, pwd, cd, cat, bat, touch, mkdir, rmdir, rm, cp, mv, find, tree, du, df, stat
+TEXT: echo, write, edit, head, tail, wc, grep, sort, uniq, hexdump, base64, diff
+SYS: ver, uname, whoami, hostname, date, time, cal, clear, history, env, mem, ps, top, uptime, reboot, exit
+NET: ping, ifconfig, curl, wget, server start|stop|status, jdb set|get|del|list|incr
+FUN: calc, cowsay, fortune, banner, figlet, matrix, snake (sim), man, tutorial, cmds`);
+      break;
+    case "cmds":
+      print("80+ commands:");
+      print("FS: ls dir ll la pwd cd cat type bat more touch mkdir rmdir rm cp mv ren find tree du df stat chmod");
+      print("TEXT: echo printf write edit head tail wc grep sort uniq cut tr hexdump base64 strings diff cmp rev tee");
+      print("SYS: ver uname whoami hostname sysinfo date time cal clear history env set alias mem free cpuinfo ps top uptime sleep reboot shutdown");
+      print("NET: ping ifconfig curl wget server jdb");
+      print("FUN: run calc cowsay fortune banner figlet matrix snake tetris man help tutorial");
+      break;
+    case "tutorial":
+      print("1. ls -l /  2. cd /home/user  3. echo hi > test.txt  4. cat test.txt  5. jdb set x 10  6. server start");
+      break;
+    case "ls": case "dir": case "ll": case "la": {
+      let path=args[0] || CWD;
+      let pnorm=norm(path);
+      let listing=listDir(pnorm);
+      if(Object.keys(FS).includes(pnorm)){
+        print(pnorm);
+        break;
+      }
+      if(listing.dirs.length==0 && listing.files.length==0){
+        if(FS[pnorm]){ print(pnorm); }
+        else print(`ls: ${path}: No such file`, "err");
+      } else {
+        let outStr="";
+        listing.dirs.forEach(d=> outStr+=`[${d}/] `);
+        listing.files.forEach(f=> outStr+=`${f} `);
+        print(outStr);
+      }
+      break;
+    }
+    case "pwd": out(CWD); break;
+    case "cd": {
+      let target=args[0] || "/home/user";
+      if(target==".."){ CWD=CWD.split("/").slice(0,-1).join("/") || "/"; if(CWD=="") CWD="/"; }
+      else {
+        let np=norm(target);
+        if(FS[np] && !listDir(np).dirs.length && !Object.keys(FS).some(k=>k.startsWith(np+"/")) && !(np in FS && FS[np]==undefined)){
+          // if file, error
+          if(FS[np] && typeof FS[np]==="string" && !Object.keys(FS).some(k=>k.startsWith(np+"/"))){ print(`cd: ${target}: Not a directory`, "err"); break; }
+        }
+        CWD=np;
+      }
+      updatePrompt();
+      break;
+    }
+    case "cat": case "type": {
+      if(!args[0]){ print("Usage: cat <file>"); break; }
+      args.forEach(f=>{
+        let c=FS[norm(f)];
+        if(c) print(c);
+        else print(`cat: ${f}: No such file`, "err");
+      });
+      break;
+    }
+    case "bat": {
+      let c=FS[norm(args[0])];
+      if(!c) print("No file", "err");
+      else c.split("\n").forEach((l,i)=> print(`${String(i+1).padStart(4)} | ${l}`, "dim"));
+      break;
+    }
+    case "echo": {
+      // raw after echo
+      let rest=line.slice(5).trim();
+      // remove redir part for display
+      if(redir) rest=rest.split(">").shift().trim().replace(/^"|"$/g,"");
+      out(rest);
+      break;
+    }
+    case "touch": args.forEach(f=>{ let p=norm(f); if(!FS[p]) FS[p]=""; print(`touch ${p}`); }); break;
+    case "mkdir": case "md": {
+      args.forEach(d=> { let p=norm(d); FS[p+"/.keep"]=""; print(`mkdir ${p}`); });
+      break;
+    }
+    case "rm": case "del": {
+      let targets=args.filter(a=> !a.startsWith("-"));
+      targets.forEach(t=> { let p=norm(t); if(FS[p]){ delete FS[p]; print(`Removed ${p}`);} else { // try dir
+        let prefix=p+"/"; let toDel=Object.keys(FS).filter(k=>k.startsWith(prefix));
+        if(toDel.length){ toDel.forEach(k=> delete FS[k]); print(`Removed dir ${p} (${toDel.length} files)`); }
+        else print(`rm: ${t}: No such`, "err");
+      }});
+      break;
+    }
+    case "cp": case "copy": {
+      if(args.length<2){ print("Usage: cp src dst"); break; }
+      let src=norm(args[0]), dst=norm(args[1]);
+      if(FS[src]){ FS[dst]=FS[src]; print(`Copied to ${dst}`); }
+      else print("src not found", "err");
+      break;
+    }
+    case "mv": case "move": case "ren": case "rename": {
+      if(args.length<2){ print("Usage: mv src dst"); break; }
+      let src=norm(args[0]), dst=norm(args[1]);
+      if(FS[src]){ FS[dst]=FS[src]; delete FS[src]; print(`Moved to ${dst}`); }
+      else print("src not found", "err");
+      break;
+    }
+    case "find": {
+      let path=norm(args[0] || "/");
+      let namePat=null;
+      for(let i=0;i<args.length;i++) if(args[i]=="-name" && args[i+1]) namePat=args[i+1].replace(/\*/g, ".*");
+      let results=Object.keys(FS).filter(k=>k.startsWith(path));
+      if(namePat){ let re=new RegExp(namePat); results=results.filter(k=> re.test(k.split("/").pop())); }
+      results.forEach(r=> print(r));
+      print(`Found ${results.length}`, "dim");
+      break;
+    }
+    case "tree": {
+      let path=norm(args[0]||CWD);
+      function recurse(p, pref=""){
+        let {dirs, files}=listDir(p);
+        let items=[...dirs.map(d=>({n:d,dir:true})), ...files.map(f=>({n:f,dir:false}))];
+        items.forEach((it,idx)=>{
+          let last=idx==items.length-1;
+          let conn=last?"└── ":"├── ";
+          print(pref+conn+(it.dir?`[${it.n}/]` : it.n));
+          if(it.dir) recurse(p.replace(/\/$/,"")+"/"+it.n, pref+(last?"    ":"│   "));
+        });
+      }
+      print(path);
+      recurse(path);
+      break;
+    }
+    case "du": { let p=norm(args[0]||CWD); let total=Object.keys(FS).filter(k=>k.startsWith(p)).reduce((a,k)=>a+FS[k].length,0); print(`${total} bytes ${p}`); break; }
+    case "df": print("Filesystem Size Used Free Use% Mounted\nJinoFS 32M "+Object.values(FS).reduce((a,b)=>a+b.length,0)/1024+"K "+(32*1024 - Object.values(FS).reduce((a,b)=>a+b.length,0)/1024)+"K - /"); break;
+    case "stat": {
+      let p=norm(args[0]); let c=FS[p];
+      if(c) print(`File: ${p}\nSize: ${c.length} Type: file`);
+      else print("No such", "err");
+      break;
+    }
+    case "write": case "edit": case "nano": {
+      let path=norm(args[0]||"/tmp/new.txt");
+      let existing=FS[path]||"";
+      print(`Editing ${path} (existing ${existing.length}b). Type lines, empty line+'.' or ':wq' to save. Ctrl+C abort (but will save here).`);
+      let lines=[];
+      let collecting=true;
+      function collectMode(){
+        let inline=document.createElement('div');
+        inline.style.display='flex';
+        inline.innerHTML=`<span style="color:#888">${lines.length+1}> </span><input style="flex:1;background:#000;color:#0f0;border:none;font-family:monospace;outline:none;" />`;
+        term.appendChild(inline);
+        let inp=inline.querySelector('input'); inp.focus();
+        inp.addEventListener('keydown', e=>{
+          if(e.key==="Enter"){
+            let v=inp.value;
+            if(v=="."||v==":wq"){ FS[path]=lines.join("\n"); print(`Saved ${lines.join("\n").length}b to ${path}`, "sys"); inline.remove(); input.focus(); }
+            else { lines.push(v); inline.remove(); collectMode(); }
+          }
+        });
+      }
+      collectMode();
+      break;
+    }
+    case "head": {
+      let n=10; let file=args[0];
+      if(args[0]=="-n"){ n=parseInt(args[1]); file=args[2]; }
+      let c=FS[norm(file)]||""; print(c.split("\n").slice(0,n).join("\n"));
+      break;
+    }
+    case "tail": {
+      let n=10; let file=args[0];
+      if(args[0]=="-n"){ n=parseInt(args[1]); file=args[2]; }
+      let c=FS[norm(file)]||""; print(c.split("\n").slice(-n).join("\n"));
+      break;
+    }
+    case "wc": {
+      let c=FS[norm(args[0])]||""; print(`${c.split("\n").length} ${c.split(/\s+/).length} ${c.length} ${args[0]}`);
+      break;
+    }
+    case "grep": {
+      let pat=args[0]; let file=args[1];
+      if(!pat){ print("Usage: grep pat [file]"); break; }
+      let re=new RegExp(pat,"i");
+      if(file){
+        let c=FS[norm(file)]||""; c.split("\n").forEach((l,i)=>{ if(re.test(l)) print(`${file}:${i+1}:${l}`); });
+      } else {
+        Object.entries(FS).forEach(([p,c])=>{ c.split("\n").forEach((l,i)=>{ if(re.test(l)) print(`${p}:${i+1}:${l}`); }); });
+      }
+      break;
+    }
+    case "ver": case "version": print("Jino OS 1.0 Console Edition - No GUI, Pure Console"); break;
+    case "uname": print("JinoOS jino-pc 1.0-CONSOLE i386"); break;
+    case "whoami": print("jino"); break;
+    case "hostname": if(args[0]) JDB.hostname=args[0]; print(JDB.hostname); updatePrompt(); break;
+    case "date": print(new Date().toString()); break;
+    case "clear": case "cls": term.innerHTML=""; break;
+    case "history": historyArr.forEach((h,i)=> print(`${i+1} ${h}`)); break;
+    case "env": print(Object.entries({USER:"jino", HOME:"/home/user", PWD:CWD, OS:"Jino OS 1.0", HOST:JDB.hostname, SHELL:"jinosh"}).map(([k,v])=>`${k}=${v}`).join("\n")); break;
+    case "mem": case "free": print(`MemTotal 32MB Used ${Object.values(FS).reduce((a,b)=>a+b.length,0)/1024}KB Free ...`); break;
+    case "ps": print("PID NAME MEM\n1 jino_kernel 2MB\n2 jino_fs 1MB\n3 jinosh 1MB"); break;
+    case "uptime": print("up "+Math.floor(performance.now()/1000)+"s"); break;
+    case "server": {
+      let sub=args[0]||"status";
+      if(sub=="start"){ serverRunning=true; print("[JinoServer] Started :80 serving /www", "sys"); }
+      else if(sub=="stop"){ serverRunning=false; print("Stopped"); }
+      else { print(`Server ${serverRunning?"RUNNING":"STOPPED"} :80 Root /www`); }
+      break;
+    }
+    case "jdb": {
+      let op=args[0];
+      if(op=="set" && args[1]){ JDB[args[1]]=args.slice(2).join(" "); print(`OK ${args[1]}=${JDB[args[1]]}`); }
+      else if(op=="get") print(JDB[args[1]] || "(nil)");
+      else if(op=="list") Object.entries(JDB).forEach(([k,v])=> print(`${k} = ${v}`));
+      else if(op=="del") { delete JDB[args[1]]; print(`Del ${args[1]}`); }
+      else if(op=="incr"){ let v=parseInt(JDB[args[1]]||"0")+1; JDB[args[1]]=String(v); print(v); }
+      else print("jdb set/get/del/list/incr");
+      break;
+    }
+    case "calc": {
+      let expr=args.join(" ");
+      try{ let r=eval(expr.replace(/[^0-9+\-*/().%^ sincosqrtl]/g,"")); print(r); }
+      catch(e){ print("calc error "+e, "err"); }
+      break;
+    }
+    case "cowsay": {
+      let t=args.join(" ")||"Jino OS Console";
+      print(` _${"_".repeat(t.length)}_\n< ${t} >\n -${"-".repeat(t.length)}-\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||`);
+      break;
+    }
+    case "fortune": { const f=["Jino OS - No GUI, no problem","Console is real power","DOS lives in Jino"]; print(f[Math.floor(Math.random()*f.length)]); break; }
+    case "banner": { print("#### # #   #  ###   ####   ####", "sys"); print(args.join(" ").toUpperCase()); break; }
+    case "matrix": {
+      let count=0; let int=setInterval(()=>{ let line=""; for(let i=0;i<60;i++) line+=String.fromCharCode(33+Math.random()*94); print(line, "green"); count++; if(count>20) clearInterval(int); },100);
+      break;
+    }
+    case "man": print("man: "+(args[0]||"")+" - console edition, see help, cmds"); break;
+    case "motd": print("Welcome to Jino Console No-GUI"); break;
+    case "reboot": term.innerHTML=""; boot(); break;
+    case "shutdown": case "exit": case "quit": print("Shutdown...", "sys"); break;
+    default:
+      print(`jino: ${cmd}: command not found. Type cmds`, "err");
+  }
+}
+
+input.addEventListener('keydown', e=>{
+  if(e.key==="Enter"){
+    let v=input.value;
+    handle(v);
+    input.value="";
+  } else if(e.key==="ArrowUp"){
+    if(histIdx>0){ histIdx--; input.value=historyArr[histIdx]; }
+    e.preventDefault();
+  } else if(e.key==="ArrowDown"){
+    if(histIdx<historyArr.length-1){ histIdx++; input.value=historyArr[histIdx]; }
+    else { histIdx=historyArr.length; input.value=""; }
+  }
+});
+
+setInterval(()=> document.getElementById('clock').textContent=new Date().toLocaleTimeString(), 1000);
+boot();
+</script>
+</body>
+</html>
