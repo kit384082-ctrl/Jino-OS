@@ -629,69 +629,98 @@ class JinoOS:
             return
         sub=args[0]
         if sub=="list":
-            filt=args[1] if len(args)>1 else None
-            pkgs=self.pkg_manager.list_packages(filt)
-            print(f"{C_BOLD}Repo - {len(pkgs)} pkgs{C_RESET}")
-            print(f"{'NAME':<20} {'VER':<10} {'PORT':<6} {'TYPE':<10} DESC")
-            print("-"*90)
-            for p in pkgs: print(f"{C_GREEN}{p['name']:<20}{C_RESET} {p.get('version',''):<10} {str(p.get('port','-')):<6} {p.get('type',''):<10} {p.get('description','')[:50]}")
+            self._jpkg_list(args)
         elif sub=="search":
-            term=args[1] if len(args)>1 else ""
-            if not term:
-                print_error("JNO-009","jpkg search без термина","Пример: jpkg search nginx")
-                return
-            res=self.pkg_manager.search(term)
-            if not res:
-                print_error("JNO-012",f"search '{term}' ничего не нашел",f"Попробуй: jpkg list, jpkg search {term[:3]}")
-            else:
-                print(f"Search '{term}' {len(res)} found:")
-                for p in res: print(f" {p['name']:<20} {p.get('description','')}")
+            self._jpkg_search(args)
         elif sub=="install":
-            if len(args)<2:
-                print_error("JNO-009","jpkg install без имени пакета","Пример: jpkg install nginx --port 8080 --name myweb")
-                return
-            pkg_name=args[1]; port=None; custom_name=None; root=None; i=2
-            while i < len(args):
-                if args[i]=="--port" and i+1<len(args):
-                    try: port=int(args[i+1])
-                    except:
-                        print_error("JNO-015",f"Неверный порт {args[i+1]}","Порт должен быть числом 1-65535, пример: --port 8080")
-                        return
-                    i+=2; continue
-                if args[i]=="--name" and i+1<len(args): custom_name=args[i+1]; i+=2; continue
-                if args[i]=="--root" and i+1<len(args): root=args[i+1]; i+=2; continue
-                i+=1
-            print(f"{C_YELLOW}Installing {pkg_name}...{C_RESET}")
-            ok,msg=self.pkg_manager.install(pkg_name,port=port,custom_name=custom_name,root=root)
-            if not ok:
-                if "not found" in msg.lower():
-                    print_error("JNO-012",msg,f"Доступные: jpkg list. Попробуй jpkg search {pkg_name[:3]}")
-                elif "exists" in msg.lower():
-                    print_error("JNO-006",msg,f"Сервер уже есть. Используй другое имя: --name {pkg_name}2 или srv delete {custom_name or pkg_name}")
-                else:
-                    print(f"{C_RED}{msg}{C_RESET}")
-            else:
-                print(f"{C_GREEN}{msg}{C_RESET}")
+            self._jpkg_install(args)
         elif sub in ("uninstall","remove"):
-            if len(args)<2:
-                print_error("JNO-009","jpkg uninstall без имени","Пример: jpkg uninstall myweb или srv delete myweb")
-                return
-            ok,msg=self.srv_manager.delete(args[1])
-            if not ok:
-                print_error("JNO-011",msg,f"Проверь srv list")
-            else:
-                print(msg)
+            self._jpkg_uninstall(args)
         elif sub=="info":
-            if len(args)<2:
-                print_error("JNO-009","jpkg info без имени","Пример: jpkg info nginx")
-                return
-            pkg=self.pkg_manager.get_pkg(args[1])
-            if not pkg:
-                print_error("JNO-012",f"Пакет {args[1]} не найден","jpkg list покажет все")
-            else:
-                print(json.dumps(pkg,indent=2))
+            self._jpkg_info(args)
         else:
             print_error("JNO-008",f"jpkg {sub} неизвестная подкоманда","Доступные: list, search, install, uninstall, info")
+
+    def _jpkg_list(self, args):
+        filt = args[1] if len(args) > 1 else None
+        pkgs = self.pkg_manager.list_packages(filt)
+        print(f"{C_BOLD}Repo - {len(pkgs)} pkgs{C_RESET}")
+        print(f"{'NAME':<20} {'VER':<10} {'PORT':<6} {'TYPE':<10} DESC")
+        print("-" * 90)
+        for p in pkgs:
+            print(f"{C_GREEN}{p['name']:<20}{C_RESET} {p.get('version', ''):<10} {str(p.get('port', '-')):<6} {p.get('type', ''):<10} {p.get('description', '')[:50]}")
+
+    def _jpkg_search(self, args):
+        term = args[1] if len(args) > 1 else ""
+        if not term:
+            print_error("JNO-009", "jpkg search без термина", "Пример: jpkg search nginx")
+            return
+        res = self.pkg_manager.search(term)
+        if not res:
+            print_error("JNO-012", f"search '{term}' ничего не нашел", f"Попробуй: jpkg list, jpkg search {term[:3]}")
+        else:
+            print(f"Search '{term}' {len(res)} found:")
+            for p in res:
+                print(f" {p['name']:<20} {p.get('description', '')}")
+
+    def _jpkg_install(self, args):
+        if len(args) < 2:
+            print_error("JNO-009", "jpkg install без имени пакета", "Пример: jpkg install nginx --port 8080 --name myweb")
+            return
+        pkg_name = args[1]
+        port = None
+        custom_name = None
+        root = None
+        i = 2
+        while i < len(args):
+            if args[i] == "--port" and i + 1 < len(args):
+                try:
+                    port = int(args[i + 1])
+                except:
+                    print_error("JNO-015", f"Неверный порт {args[i + 1]}", "Порт должен быть числом 1-65535, пример: --port 8080")
+                    return
+                i += 2
+                continue
+            if args[i] == "--name" and i + 1 < len(args):
+                custom_name = args[i + 1]
+                i += 2
+                continue
+            if args[i] == "--root" and i + 1 < len(args):
+                root = args[i + 1]
+                i += 2
+                continue
+            i += 1
+        print(f"{C_YELLOW}Installing {pkg_name}...{C_RESET}")
+        ok, msg = self.pkg_manager.install(pkg_name, port=port, custom_name=custom_name, root=root)
+        if not ok:
+            if "not found" in msg.lower():
+                print_error("JNO-012", msg, f"Доступные: jpkg list. Попробуй jpkg search {pkg_name[:3]}")
+            elif "exists" in msg.lower():
+                print_error("JNO-006", msg, f"Сервер уже есть. Используй другое имя: --name {pkg_name}2 или srv delete {custom_name or pkg_name}")
+            else:
+                print(f"{C_RED}{msg}{C_RESET}")
+        else:
+            print(f"{C_GREEN}{msg}{C_RESET}")
+
+    def _jpkg_uninstall(self, args):
+        if len(args) < 2:
+            print_error("JNO-009", "jpkg uninstall без имени", "Пример: jpkg uninstall myweb или srv delete myweb")
+            return
+        ok, msg = self.srv_manager.delete(args[1])
+        if not ok:
+            print_error("JNO-011", msg, f"Проверь srv list")
+        else:
+            print(msg)
+
+    def _jpkg_info(self, args):
+        if len(args) < 2:
+            print_error("JNO-009", "jpkg info без имени", "Пример: jpkg info nginx")
+            return
+        pkg = self.pkg_manager.get_pkg(args[1])
+        if not pkg:
+            print_error("JNO-012", f"Пакет {args[1]} не найден", "jpkg list покажет все")
+        else:
+            print(json.dumps(pkg, indent=2))
 
     def cmd_srv(self,args):
         if not args:
