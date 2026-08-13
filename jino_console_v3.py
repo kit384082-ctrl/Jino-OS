@@ -6,7 +6,7 @@ Build: 2026-07-13 FULL-ERRORS+CURL
 """
 import os, sys, time, json, shlex, base64, re, random, math
 import shutil, datetime, socket, threading, urllib.request, urllib.parse, urllib.error
-import http.client, ssl
+import ssl
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 VERSION="2.2 Console Server + Errors + curl"
