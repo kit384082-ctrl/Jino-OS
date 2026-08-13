@@ -108,11 +108,13 @@ def get_error(code):
     code=code.upper()
     if not code.startswith("JNO-"):
         code="JNO-"+code.zfill(3) if code.isdigit() else "JNO-"+code
-        # fix if code like "001" -> JNO-001
-        if code.startswith("JNO--"): code=code.replace("JNO--","JNO-")
-        if len(code)==6 and code[4:].isdigit(): # JNO-1 -> JNO-001
-            num=code.split("-")[1]
-            code=f"JNO-{int(num):03d}"
+
+    # fix if code like "001" -> JNO-001
+    if code.startswith("JNO--"): code=code.replace("JNO--","JNO-")
+
+    parts = code.split("-")
+    if len(parts) == 2 and parts[1].isdigit(): # JNO-1 -> JNO-001
+        code = f"JNO-{int(parts[1]):03d}"
     # choose lang
     if CURRENT_LANG=="ru":
         return ERRORS_RU.get(code) or ERRORS_EN.get(code)
