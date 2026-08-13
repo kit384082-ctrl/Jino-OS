@@ -1442,7 +1442,43 @@ URL форматы:
             print_error("JNO-009","calc без выражения","Пример: calc 2+2*2, calc sqrt(16)+sin(0.5)")
             return
         expr=" ".join(args).replace("^","**")
-        try: print(eval(expr,{"__builtins__":{}},{"sin":math.sin,"cos":math.cos,"sqrt":math.sqrt,"pi":math.pi}))
+
+        import ast
+        def safe_eval(expr):
+            allowed_names = {"sin": math.sin, "cos": math.cos, "sqrt": math.sqrt, "pi": math.pi}
+            def _eval(node):
+                if isinstance(node, ast.Expression):
+                    return _eval(node.body)
+                elif isinstance(node, ast.Constant):
+                    return node.value
+                elif isinstance(node, ast.BinOp):
+                    left = _eval(node.left)
+                    right = _eval(node.right)
+                    if isinstance(node.op, ast.Add): return left + right
+                    elif isinstance(node.op, ast.Sub): return left - right
+                    elif isinstance(node.op, ast.Mult): return left * right
+                    elif isinstance(node.op, ast.Div): return left / right
+                    elif isinstance(node.op, ast.Mod): return left % right
+                    elif isinstance(node.op, ast.Pow): return left ** right
+                    else: raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+                elif isinstance(node, ast.UnaryOp):
+                    operand = _eval(node.operand)
+                    if isinstance(node.op, ast.UAdd): return +operand
+                    elif isinstance(node.op, ast.USub): return -operand
+                    else: raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+                elif isinstance(node, ast.Name):
+                    if node.id in allowed_names:
+                        return allowed_names[node.id]
+                    raise ValueError(f"Unknown name: {node.id}")
+                elif isinstance(node, ast.Call):
+                    func = _eval(node.func)
+                    args = [_eval(arg) for arg in node.args]
+                    return func(*args)
+                else:
+                    raise ValueError(f"Unsupported syntax: {type(node).__name__}")
+            return _eval(ast.parse(expr, mode='eval'))
+
+        try: print(safe_eval(expr))
         except Exception as e: print(f"calc error: {e}")
     def cmd_ver(self,args): print(f"Jino OS {VERSION} Build {BUILD} Files {len(self.fs.files)} Servers {len(self.srv_manager.servers)}")
     def cmd_date(self,args): print(datetime.datetime.now())
