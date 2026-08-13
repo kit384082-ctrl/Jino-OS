@@ -20,6 +20,7 @@
                 global  paging_is_enabled
                 global  page_directory
                 global  paging_fault_count
+                global  paging_set_user
 
                 extern  pmm_alloc_page
                 extern  pmm_free_page
@@ -69,15 +70,21 @@ paging_init:
                 shl     eax, 10                 ; table * 1024
                 add     eax, ebx                ; + entry
                 shl     eax, PAGE_SHIFT         ; physical address
+                ; PAGE_USER here only makes the page reachable from ring
+                ; 3 if its table says so too; user_map_range() opens the
+                ; individual pages a task is actually allowed to touch.
                 or      eax, PAGE_PRESENT | PAGE_WRITE
                 mov     [edi + ebx * 4], eax
                 inc     ebx
                 cmp     ebx, 1024
                 jb      .entry_loop
 
-                ; link the table into the directory
+                ; link the table into the directory.  The directory entry
+                ; carries PAGE_USER so ring 3 can reach the few pages that
+                ; are opened up individually below; the page entries stay
+                ; supervisor-only until something asks otherwise.
                 mov     eax, edi
-                or      eax, PAGE_PRESENT | PAGE_WRITE
+                or      eax, PAGE_PRESENT | PAGE_WRITE | PAGE_USER
                 mov     [page_directory + esi * 4], eax
 
                 inc     esi
@@ -243,6 +250,64 @@ paging_unmap:
 
 ; ---------------------------------------------------------------------
 ; paging_get_physical(virtual) -> EAX = physical address or 0
+; ---------------------------------------------------------------------
+; ---------------------------------------------------------------------
+; paging_set_user(virtual, count) -> EAX = pages opened
+;
+;   Adds PAGE_USER to pages that are already mapped, which is how a
+;   region of the identity map is handed to ring 3.  Pages that are not
+;   mapped are skipped rather than created, so a bad range cannot
+;   quietly become valid memory.
+; ---------------------------------------------------------------------
+paging_set_user:
+                push    ebp
+                mov     ebp, esp
+                push    ebx
+                push    esi
+                push    edi
+
+                mov     esi, [ebp + 8]          ; first virtual address
+                and     esi, ~(PAGE_SIZE - 1)
+                mov     edi, [ebp + 12]         ; page count
+                xor     ebx, ebx                ; pages touched
+.next:
+                test    edi, edi
+                jz      .done
+
+                mov     eax, esi
+                shr     eax, 22
+                mov     ecx, [current_directory]
+                mov     edx, [ecx + eax * 4]
+                test    edx, PAGE_PRESENT
+                jz      .skip
+
+                or      dword [ecx + eax * 4], PAGE_USER
+
+                and     edx, ~0xFFF
+                mov     eax, esi
+                shr     eax, PAGE_SHIFT
+                and     eax, 0x3FF
+                test    dword [edx + eax * 4], PAGE_PRESENT
+                jz      .skip
+
+                or      dword [edx + eax * 4], PAGE_USER
+                inc     ebx
+
+                push    esi
+                call    paging_invalidate
+                add     esp, 4
+.skip:
+                add     esi, PAGE_SIZE
+                dec     edi
+                jmp     .next
+.done:
+                mov     eax, ebx
+                pop     edi
+                pop     esi
+                pop     ebx
+                pop     ebp
+                ret
+
 ; ---------------------------------------------------------------------
 paging_get_physical:
                 push    ebp

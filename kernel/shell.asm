@@ -58,6 +58,12 @@
                 extern  fs_list
                 extern  fs_print_info
                 extern  fs_max_file_size
+                extern  user_enter
+                extern  user_demo
+                extern  user_faulter
+                extern  user_syscall_count
+                extern  syscall_count
+                extern  syscall_rejected
                 extern  paging_get_physical
                 extern  paging_fault_count
                 extern  paging_is_enabled
@@ -592,6 +598,39 @@ spinner_task:
                 xor     eax, eax
                 ret
 
+; --------------------------------------------------------------- user
+;  Run the sample program in ring 3 and report how it got on.
+cmd_user:
+                push    ebx
+
+                mov     ebx, user_demo
+                cmp     dword [argc], 2
+                jb      .go
+                CALL2   strcmp, dword [argv + 4], c_fault_arg
+                test    eax, eax
+                jnz     .go
+                mov     ebx, user_faulter
+.go:
+                CALL1   kprintf, msg_entering
+
+                push    ebx
+                call    user_enter
+                add     esp, 4
+
+                push    eax
+                push    dword fmt_user_exit
+                call    kprintf
+                add     esp, 8
+
+                push    dword [syscall_rejected]
+                push    dword [syscall_count]
+                push    dword fmt_syscalls
+                call    kprintf
+                add     esp, 12
+
+                pop     ebx
+                ret
+
 ; ----------------------------------------------------------------- ls
 cmd_ls:
                 call    fs_list
@@ -1048,6 +1087,9 @@ fmt_written:    db      "wrote %s (%u bytes)", 10, 0
 fmt_removed:    db      "removed %s", 10, 0
 fmt_word_raw:   db      "%s", 0
 fmt_no_file:    db      "no such file: %s", 10, 0
+msg_entering:   db      "dropping to ring 3...", 10, 0
+fmt_user_exit:  db      "back in ring 0, the program exited with %d", 10, 0
+fmt_syscalls:   db      "%u system call(s), %u rejected", 10, 0
 spinner_name:   db      "spinner", 0
 fmt_preempt:    db      "preempted spinner reached %u iterations", 10, 0
 msg_read_usage: db      "usage: read <lba>", 10, 0
@@ -1099,6 +1141,8 @@ c_write:    db "write", 0
 c_rm:       db "rm", 0
 c_format:   db "format", 0
 c_df:       db "df", 0
+c_user:     db "user", 0
+c_fault_arg: db "fault", 0
 c_alloc:    db "alloc", 0
 c_free:     db "free", 0
 c_peek:     db "peek", 0
@@ -1131,6 +1175,7 @@ h_write:    db "store a file: write <name> <text>", 0
 h_rm:       db "delete a file: rm <name>", 0
 h_format:   db "create a fresh filesystem", 0
 h_df:       db "filesystem usage", 0
+h_user:     db "run a program in ring 3: user [fault]", 0
 h_alloc:    db "allocate heap memory", 0
 h_free:     db "release the last allocation", 0
 h_peek:     db "read a memory address", 0
@@ -1148,7 +1193,7 @@ l_system:       dd c_help, c_clear, c_echo, c_uname, c_cpu, c_uptime
                 dd c_date, c_colors, c_about, 0
 l_memory:       dd c_mem, c_memmap, c_heap, c_alloc, c_free, c_peek, c_virt, 0
 l_files:        dd c_ls, c_cat, c_write, c_rm, c_format, c_df, c_disk, c_read, 0
-l_tasks:        dd c_ps, c_spawn, c_preempt, c_sleep, 0
+l_tasks:        dd c_ps, c_spawn, c_preempt, c_sleep, c_user, 0
 l_debug:        dd c_panic, c_crash, 0
 
 help_groups:
@@ -1181,6 +1226,7 @@ command_table:
                 dd c_rm,     cmd_rm,     h_rm
                 dd c_format, cmd_format, h_format
                 dd c_df,     cmd_df,     h_df
+                dd c_user,   cmd_user,   h_user
                 dd c_alloc,  cmd_alloc,  h_alloc
                 dd c_free,   cmd_free,   h_free
                 dd c_peek,   cmd_peek,   h_peek

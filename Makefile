@@ -39,6 +39,9 @@ KOBJS := \
 	$(BUILD)/cpu.o      \
 	$(BUILD)/ata.o      \
 	$(BUILD)/fs.o       \
+	$(BUILD)/syscall.o  \
+	$(BUILD)/user.o     \
+	$(BUILD)/userprog.o \
 	$(BUILD)/task.o     \
 	$(BUILD)/panic.o    \
 	$(BUILD)/shell.o

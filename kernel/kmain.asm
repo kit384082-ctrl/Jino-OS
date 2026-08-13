@@ -9,7 +9,6 @@
 %include "kernel.inc"
 
                 global  kmain
-                global  syscall_dispatch
                 global  kernel_version
 
                 extern  vga_init
@@ -41,6 +40,11 @@
                 extern  ata_print_info
                 extern  fs_init
                 extern  fs_print_info
+                extern  syscall_init
+                extern  user_init
+                extern  user_map_range
+                extern  user_area_start
+                extern  user_program_size
                 extern  task_init
                 extern  shell_run
                 extern  panic
@@ -145,6 +149,20 @@ kmain:
                 ; ---- filesystem --------------------------------------
                 call    step_fs
                 call    fs_init
+                call    step_ok
+
+                ; ---- ring 3 ------------------------------------------
+                call    step_user
+                call    syscall_init
+                call    user_init
+                ; open the user program's own pages to ring 3
+                mov     eax, [user_program_size]
+                add     eax, PAGE_SIZE - 1
+                shr     eax, PAGE_SHIFT
+                push    eax
+                push    dword [user_area_start]
+                call    user_map_range
+                add     esp, 8
                 call    step_ok
 
                 ; ---- tasking -----------------------------------------
@@ -256,53 +274,6 @@ breakpoint_handler:
                 ret
 
 ; ---------------------------------------------------------------------
-; syscall_dispatch(frame) -> EAX = result
-;   Called from the INT 0x80 stub.  EAX selects the call, EBX/ECX/EDX
-;   carry the arguments.
-; ---------------------------------------------------------------------
-syscall_dispatch:
-                push    ebp
-                mov     ebp, esp
-                push    esi
-
-                mov     esi, [ebp + 8]          ; trap frame
-                mov     eax, [esi + 44]         ; frame->eax
-
-                cmp     eax, 0
-                je      .sys_write
-                cmp     eax, 1
-                je      .sys_uptime
-                cmp     eax, 2
-                je      .sys_version
-                jmp     .bad_call
-
-.sys_write:     ; ebx = string pointer
-                mov     eax, [esi + 32]         ; frame->ebx
-                test    eax, eax
-                jz      .bad_call
-                push    eax
-                call    vga_puts
-                add     esp, 4
-                xor     eax, eax
-                jmp     .done
-
-.sys_uptime:
-                extern  pit_uptime_ms
-                mov     eax, [pit_uptime_ms]
-                jmp     .done
-
-.sys_version:
-                mov     eax, kernel_version
-                jmp     .done
-
-.bad_call:
-                mov     eax, -1
-.done:
-                pop     esi
-                pop     ebp
-                ret
-
-; ---------------------------------------------------------------------
 ;  Progress reporting helpers
 ; ---------------------------------------------------------------------
 %macro STEP 2
@@ -326,6 +297,7 @@ STEP step_rtc,      s_rtc
 STEP step_cpu,      s_cpu
 STEP step_ata,      s_ata
 STEP step_fs,       s_fs
+STEP step_user,     s_user
 STEP step_task,     s_task
 
 step_ok:
@@ -362,6 +334,7 @@ s_rtc:          db      "real time clock", 0
 s_cpu:          db      "cpu identification", 0
 s_ata:          db      "ata storage", 0
 s_fs:           db      "jinofs filesystem", 0
+s_user:         db      "ring 3 user mode", 0
 s_task:         db      "task scheduler", 0
 
 fmt_memory:     db      "memory: %u KiB usable (%u pages), kernel %u KiB, heap %u bytes", 10, 0

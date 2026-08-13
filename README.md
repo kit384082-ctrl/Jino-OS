@@ -41,7 +41,7 @@ jino>
 make            # assemble everything and produce build/jino.img
 make run        # boot the image under QEMU
 make sim        # boot it under the bundled software emulator
-make test       # run the test suite (101 tests)
+make test       # run the test suite (146 tests)
 make info       # print the sizes of each component
 make clean
 ```
@@ -133,6 +133,7 @@ python3 tools/simulate.py disk.img --keys 'write notes hello\r' --ata --persist
 | Virtual memory | `paging.asm` | Two-level page tables, identity mapping the low 16 MiB, plus a decoded page-fault handler. |
 | Heap | `heap.asm` | First-fit free list with boundary tags, splitting on allocation and coalescing on free. |
 | Tasks | `task.asm` | Round-robin kernel threads, cooperative (`yield`) and preemptive (timer driven). |
+| User mode | `user.asm`, `syscall.asm`, `userprog.asm` | Drops to ring 3 through an `iret`, returns through `int 0x80`, and validates every pointer that arrives from user space. |
 | Console | `vga.asm` | 80×25 text mode: scrolling, colour attributes, hardware cursor. |
 | Serial | `serial.asm` | 16550 UART on COM1, so the whole session can be captured headless. |
 | Keyboard | `keyboard.asm` | Scan code set 1, modifier tracking, extended keys, circular buffer, line editing. |
@@ -141,6 +142,31 @@ python3 tools/simulate.py disk.img --keys 'write notes hello\r' --ata --persist
 | Clock | `rtc.asm` | MC146818 with BCD and 12/24-hour handling, read twice to avoid update races. |
 | Formatting | `printf.asm` | `%d %u %x %X %o %b %c %s %p %%`, width, zero padding and left alignment. |
 | Diagnostics | `panic.asm` | Named exceptions, full register and control register dump, and a stack trace. |
+
+## User mode
+
+Ring 3 is a real privilege drop, not a simulation of one. `user_enter`
+builds an `iret` frame with user selectors and returns into it; the only
+way back is `int 0x80` through a DPL 3 gate, which lands on the ring-0
+stack the TSS names.
+
+The kernel treats every pointer from user space as hostile. Each one is
+checked against the single span the program was given before it is
+dereferenced, so a program that passes a kernel address gets `-1` rather
+than a corrupted kernel:
+
+```
+jino> user fault
+dropping to ring 3...
+  [ring 3] trying to read kernel memory...
+  [ring 3] the kernel refused, as it should
+back in ring 0, the program exited with 0
+4 system call(s), 1 rejected
+```
+
+That is also why `version` copies its string out into the caller's
+buffer instead of handing back a pointer into the kernel: a pointer ring
+3 cannot legally read would be useless to it anyway.
 
 ## The shell
 
@@ -156,6 +182,7 @@ python3 tools/simulate.py disk.img --keys 'write notes hello\r' --ata --persist
 | `format`, `df` | Create a filesystem and show how full it is. |
 | `disk`, `read <lba>` | ATA drive information and a sector hex dump. |
 | `ps`, `spawn`, `preempt` | List tasks, run a cooperative worker, demonstrate preemption. |
+| `user`, `user fault` | Run a program in ring 3; `fault` has it try to read kernel memory. |
 | `crash`, `panic` | Deliberately fault, to exercise the exception handler. |
 
 ## Testing
@@ -171,14 +198,18 @@ It covers the image layout and boot signature, each bootloader stage,
 the hand-off block, every subsystem reporting ready, protected mode and
 paging being live, the shell commands, heap behaviour (including reuse
 and coalescing after a free), the ATA driver against an emulated drive,
-task creation, teardown and preemptive scheduling, and the filesystem —
-including that a file written on one boot is still readable on the next,
-and that the volume never overlaps the kernel.
+task creation, teardown and preemptive scheduling, ring 3 — including
+that a user pointer into the kernel is refused and that the program
+still exits cleanly afterwards — and the filesystem, including that a
+file written on one boot is still readable on the next, and that the
+volume never overlaps the kernel.
 
 `tools/simulate.py` is the emulator behind this. It supplies the BIOS
 interrupts the bootloader needs, then models the devices the kernel
 talks to — PIC, PIT, UART, CMOS, CRTC and an IDE drive — and walks the
 kernel's own IDT so exceptions and IRQs reach the handlers it installed.
+Ring 3 runs on a second CPU wired to the same memory, because a Unicorn
+CPU that has executed user code will not load a code segment again.
 Run it directly to poke at the system:
 
 ```sh
@@ -194,6 +225,7 @@ kernel/   entry.asm  kmain.asm  and the subsystems listed above
 tools/    mkimage.py  simulate.py
 tests/    test_boot.py  test_kernel.py  test_shell.py
           test_disk.py  test_tasks.py   test_fs.py
+          test_user.py
 ```
 
 ## Licence

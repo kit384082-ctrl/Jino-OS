@@ -15,6 +15,7 @@ test suite, which asserts on the console output.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import sys
 
 try:
@@ -22,10 +23,12 @@ try:
         Uc,
         UC_ARCH_X86,
         UC_MODE_16,
+        UC_MODE_32,
         UC_HOOK_INTR,
         UC_HOOK_CODE,
         UC_HOOK_INSN,
         UC_HOOK_MEM_UNMAPPED,
+        UC_PROT_ALL,
         UcError,
     )
     from unicorn.x86_const import (
@@ -49,15 +52,21 @@ try:
         UC_X86_REG_EDX,
         UC_X86_REG_ESI,
         UC_X86_REG_EDI,
+        UC_X86_REG_EBP,
         UC_X86_REG_EIP,
         UC_X86_REG_ESP,
         UC_X86_REG_CS,
+        UC_X86_REG_FS,
+        UC_X86_REG_GS,
         UC_X86_REG_DS,
         UC_X86_REG_ES,
         UC_X86_REG_SS,
         UC_X86_REG_EFLAGS,
         UC_X86_REG_CR0,
+        UC_X86_REG_CR3,
         UC_X86_REG_IDTR,
+        UC_X86_REG_GDTR,
+        UC_X86_REG_TR,
     )
 except ImportError:  # pragma: no cover - the harness is optional
     sys.exit(
@@ -68,6 +77,15 @@ except ImportError:  # pragma: no cover - the harness is optional
 
 SECTOR = 512
 MEM_SIZE = 64 * 1024 * 1024
+
+# Kernel selectors, mirroring kernel/kernel.inc.
+SEG_KCODE = 0x08
+SEG_KDATA = 0x10
+
+# Scratch below the boot sector, used to iret the user CPU into ring 3.
+# Its previous contents are restored afterwards, so the guest never sees
+# the borrowed memory change.
+TRAMPOLINE = 0x00007000
 VGA_BASE = 0xB8000
 VGA_WIDTH = 80
 VGA_HEIGHT = 25
@@ -119,6 +137,11 @@ class Machine:
         self.ata_status = 0x50 if self.ata_enabled else 0x00  # RDY | DSC
         self.ata_lba_mid = 0
         self.ata_lba_hi = 0
+        self._budget = 0
+        self._int80_sites = frozenset()
+        self._iret_sites = frozenset()
+        self.user_uc = None
+        self.instructions = 0
         self.ata_writing = False
         self.ata_write_lba = 0
         self.ata_write_bytes = 0
@@ -130,8 +153,15 @@ class Machine:
         self.uart_divisor = 0
         self.uart_rx = bytearray()
 
+        # Guest RAM lives in a buffer we own rather than inside Unicorn,
+        # so that a second CPU can be attached to the very same bytes.
+        # See _run_user for why ring 3 needs a CPU of its own.
+        self.ram = ctypes.create_string_buffer(MEM_SIZE)
+
         self.uc = Uc(UC_ARCH_X86, UC_MODE_16)
-        self.uc.mem_map(0, MEM_SIZE)
+        self.uc.mem_map_ptr(
+            0, MEM_SIZE, UC_PROT_ALL, ctypes.addressof(self.ram)
+        )
         self.uc.mem_write(0x7C00, bytes(self.disk[:SECTOR]))
 
         self.uc.hook_add(UC_HOOK_INTR, self._on_interrupt)
@@ -232,6 +262,221 @@ class Machine:
         if flags & 0x0F == 0x0E:
             uc.reg_write(UC_X86_REG_EFLAGS, eflags & ~(1 << 9))
         uc.reg_write(UC_X86_REG_EIP, handler)
+
+    def _tss_stack(self, uc):
+        """Read esp0/ss0 out of the TSS the task register points at."""
+        # Unicorn hands back the descriptor as (selector, base, limit,
+        # flags), so the GDT walk is already done for us.
+        selector, base, limit = uc.reg_read(UC_X86_REG_TR)[:3]
+        if not selector or limit < 11:
+            return None, None
+        esp0 = int.from_bytes(uc.mem_read(base + 4, 4), "little")
+        ss0 = int.from_bytes(uc.mem_read(base + 8, 2), "little")
+        return esp0, ss0
+
+    def _make_user_cpu(self):
+        """A second CPU, wired to the same RAM, for running ring 3 code."""
+        uc = Uc(UC_ARCH_X86, UC_MODE_32)
+        uc.mem_map_ptr(0, MEM_SIZE, UC_PROT_ALL, ctypes.addressof(self.ram))
+
+        # It runs with the kernel's descriptor tables and page tables, so
+        # user code sees exactly the memory the kernel mapped for it.
+        uc.reg_write(UC_X86_REG_GDTR, self.uc.reg_read(UC_X86_REG_GDTR))
+        uc.reg_write(UC_X86_REG_IDTR, self.uc.reg_read(UC_X86_REG_IDTR))
+        uc.reg_write(UC_X86_REG_CR3, self.uc.reg_read(UC_X86_REG_CR3))
+
+        uc.hook_add(UC_HOOK_INSN, self._on_in, None, 1, 0, UC_X86_INS_IN)
+        uc.hook_add(UC_HOOK_INSN, self._on_out, None, 1, 0, UC_X86_INS_OUT)
+        return uc
+
+    def _run_user(self, frame, budget):
+        """
+        Execute ring 3 code and return the syscall that interrupted it.
+
+        Unicorn will happily iret down to ring 3, but a CPU that has run
+        there is spoiled for good: every later attempt to load a code
+        segment is refused and instructions start decoding as 16-bit,
+        whatever is done to CS, CR0 or the descriptor tables.  Restoring
+        a saved context does not undo it either.
+
+        So user code gets a CPU of its own, mapped onto the same guest
+        RAM.  The kernel's CPU never leaves ring 0 and stays healthy,
+        while this one can be thrown away and rebuilt whenever it breaks.
+        """
+        uc = self._make_user_cpu()
+        self.user_uc = uc
+
+        # A stack segment can only be loaded at a matching privilege
+        # level, so ring 3 cannot simply be assigned into the registers.
+        # This CPU has to get there the way the hardware does: start it
+        # in ring 0 and let it iret down, from a scratch trampoline that
+        # is put back the way it was afterwards.
+        uc.reg_write(UC_X86_REG_CS, SEG_KCODE)
+        uc.reg_write(UC_X86_REG_SS, SEG_KDATA)
+        uc.reg_write(UC_X86_REG_DS, SEG_KDATA)
+        uc.reg_write(UC_X86_REG_ESP, TRAMPOLINE + 0x80)
+
+        # Paging goes on once CR3 is set: while it is enabled Unicorn
+        # walks the page tables to load a descriptor, so the GDT has to
+        # be reachable through them first.
+        uc.reg_write(UC_X86_REG_CR0, self.uc.reg_read(UC_X86_REG_CR0))
+
+        for register, value in frame.get("regs", {}).items():
+            uc.reg_write(register, value)
+
+        saved_scratch = bytes(uc.mem_read(TRAMPOLINE, 0x84))
+        uc.mem_write(TRAMPOLINE, b"\xCF")  # iret
+        esp = TRAMPOLINE + 0x80
+        for value in (
+            frame["ss"], frame["esp"], frame["eflags"],
+            frame["cs"], frame["eip"],
+        ):
+            esp -= 4
+            uc.mem_write(esp, int(value & 0xFFFFFFFF).to_bytes(4, "little"))
+        uc.reg_write(UC_X86_REG_ESP, esp)
+
+        # Stop on the int 0x80 before it executes: the CPU cannot service
+        # the gate itself, so the kernel side has to be run by hand.
+        syscall = {}
+
+        def on_code(uc, address, size, user_data):
+            self.instructions += 1
+            if size == 2 and address in self._int80_sites:
+                syscall["return_eip"] = address + size
+                uc.emu_stop()
+
+        uc.hook_add(UC_HOOK_CODE, on_code)
+
+        try:
+            uc.emu_start(TRAMPOLINE, 0, 0, budget)
+        except UcError as exc:
+            uc.mem_write(TRAMPOLINE, saved_scratch)
+            eip = uc.reg_read(UC_X86_REG_EIP)
+            self.stop_reason = f"{exc} at eip=0x{eip:08x} (ring 3)"
+            return None
+
+        uc.mem_write(TRAMPOLINE, saved_scratch)
+
+        if "return_eip" not in syscall:
+            self.stop_reason = "instruction budget exhausted"
+            return None
+
+        syscall["regs"] = {
+            reg: uc.reg_read(reg)
+            for reg in (
+                UC_X86_REG_EAX, UC_X86_REG_EBX, UC_X86_REG_ECX,
+                UC_X86_REG_EDX, UC_X86_REG_ESI, UC_X86_REG_EDI,
+                UC_X86_REG_EBP,
+            )
+        }
+        syscall["cs"] = uc.reg_read(UC_X86_REG_CS)
+        syscall["ss"] = uc.reg_read(UC_X86_REG_SS)
+        syscall["esp"] = uc.reg_read(UC_X86_REG_ESP)
+        syscall["eflags"] = uc.reg_read(UC_X86_REG_EFLAGS)
+        return syscall
+
+    def _user_excursion(self, frame):
+        """
+        Run ring 3 until it makes a syscall, then enter the kernel.
+
+        Called from the instruction hook in place of the iret that would
+        have dropped into user mode.  The kernel CPU keeps running: on
+        the way out its EIP is simply pointed at the int 0x80 handler,
+        so from the kernel's side the gate looks like it was taken.
+        """
+        before = self.instructions
+        syscall = self._run_user(frame, max(self._budget, 1))
+        self._budget -= self.instructions - before
+
+        if syscall is None or self._budget <= 0:
+            self.uc.emu_stop()
+            return
+
+        handler = self._enter_ring0(syscall)
+        if handler is None:
+            self.uc.emu_stop()
+            return
+
+        # Resume the kernel at the handler.  Writing EIP from inside the
+        # hook makes execution continue there once it returns.
+        #
+        # Only one excursion is handled here.  What happens next is the
+        # kernel's decision: if it irets back to ring 3 the hook lands in
+        # here again, and if the call was exit it simply never does.
+        self.uc.reg_write(UC_X86_REG_EIP, handler)
+
+    def _vector_handler(self, vector):
+        """Offset and gate flags for an IDT entry, or (None, None)."""
+        base, limit = self.uc.reg_read(UC_X86_REG_IDTR)[1:3]
+        offset = vector * 8
+        if offset + 7 > limit:
+            return None, None
+        entry = self.uc.mem_read(base + offset, 8)
+        flags = entry[5]
+        if not flags & 0x80:
+            return None, None
+        handler = int.from_bytes(entry[0:2], "little") | (
+            int.from_bytes(entry[6:8], "little") << 16
+        )
+        return handler, flags
+
+    def _enter_ring0(self, syscall):
+        """
+        Deliver a ring 3 syscall to the kernel CPU as int 0x80 would.
+
+        The kernel CPU never executed the gate, so the frame it expects
+        has to be laid out on the ring 0 stack from the TSS by hand.
+        """
+        uc = self.uc
+
+        handler, flags = self._vector_handler(0x80)
+        if handler is None:
+            self.halted = True
+            self.fault = "no handler installed for vector 0x80"
+            return None
+
+        if (flags >> 5) & 3 != 3:
+            self.halted = True
+            self.fault = "int 0x80 is not reachable from ring 3"
+            return None
+
+        esp0, ss0 = self._tss_stack(uc)
+        if esp0 is None:
+            self.halted = True
+            self.fault = "no TSS loaded for a ring 3 interrupt"
+            return None
+
+        # The frame a privilege-changing interrupt pushes, which the
+        # stub's iret consumes on the way back out to user mode.
+        esp = esp0
+        for value in (
+            syscall["ss"],
+            syscall["esp"],
+            syscall["eflags"],
+            syscall["cs"],
+            syscall["return_eip"],
+        ):
+            esp -= 4
+            uc.mem_write(esp, int(value & 0xFFFFFFFF).to_bytes(4, "little"))
+
+        # Only reload SS if it really changes.  Writing a segment
+        # register mid-run makes Unicorn rebuild its cached descriptor
+        # and it comes back as a 16-bit stack, which quietly truncates
+        # every push that follows.  The kernel CPU never left ring 0, so
+        # its SS is already the one the handler wants.
+        if uc.reg_read(UC_X86_REG_SS) != ss0:
+            uc.reg_write(UC_X86_REG_SS, ss0)
+        uc.reg_write(UC_X86_REG_ESP, esp)
+        for register, value in syscall["regs"].items():
+            uc.reg_write(register, value)
+
+        # An interrupt gate clears IF; a trap gate leaves it alone.
+        if flags & 0x0F == 0x0E:
+            uc.reg_write(
+                UC_X86_REG_EFLAGS, uc.reg_read(UC_X86_REG_EFLAGS) & ~(1 << 9)
+            )
+
+        return handler
 
     def _set_carry(self, uc, on):
         flags = uc.reg_read(UC_X86_REG_EFLAGS)
@@ -671,6 +916,8 @@ class Machine:
         self._timer_period = period
         self._timer_countdown = period
         self._halt_sites = self._find_halt_instructions()
+        self._int80_sites = self._find_int80_instructions()
+        self._iret_sites = self._find_opcode_sites(b"\xCF")
         self.uc.hook_add(UC_HOOK_CODE, self._on_instruction)
         return self
 
@@ -684,10 +931,67 @@ class Machine:
         base = 0x00100000
         return {base + i for i, byte in enumerate(kernel) if byte == 0xF4}
 
+    def _find_opcode_sites(self, opcode):
+        """Addresses in the loaded kernel image holding a given opcode."""
+        kernel = self.disk[9 * SECTOR :]
+        base = 0x00100000
+        return frozenset(
+            base + i for i in range(len(kernel)) if kernel[i : i + 1] == opcode
+        )
+
+    def _find_int80_instructions(self):
+        """Addresses of the `int 0x80` opcodes in the loaded kernel image.
+
+        A syscall issued from ring 3 has to be intercepted before the
+        instruction executes; see _enter_ring0 for why.
+        """
+        kernel = self.disk[9 * SECTOR :]
+        base = 0x00100000
+        return {
+            base + i
+            for i in range(len(kernel) - 1)
+            if kernel[i] == 0xCD and kernel[i + 1] == 0x80
+        }
+
     def _on_instruction(self, uc, address, size, user_data):
         # This runs for every instruction, so it has to stay cheap: the
         # common case must be a decrement and a comparison.
+        self.instructions += 1
         self._timer_countdown -= 1
+
+        if size == 1 and address in self._iret_sites:
+            # An iret whose frame targets a ring 3 selector would drop
+            # this CPU to user mode, which Unicorn never recovers from.
+            # Run the excursion on the user CPU instead and rewrite this
+            # one's state so it carries straight on into the syscall.
+            #
+            # It all has to happen here rather than from run(): stopping
+            # and restarting emu_start puts the CPU back into the 16-bit
+            # mode it was created with, whatever CS says.
+            esp = uc.reg_read(UC_X86_REG_ESP)
+            frame = uc.mem_read(esp, 20)
+            if int.from_bytes(frame[4:8], "little") & 3 == 3:
+                uc.reg_write(UC_X86_REG_ESP, esp + 20)
+                self._user_excursion({
+                    "eip": int.from_bytes(frame[0:4], "little"),
+                    "cs": int.from_bytes(frame[4:8], "little"),
+                    "eflags": int.from_bytes(frame[8:12], "little"),
+                    "esp": int.from_bytes(frame[12:16], "little"),
+                    "ss": int.from_bytes(frame[16:20], "little"),
+                    # The general registers the stub's popa just
+                    # restored, which is how a syscall's return value
+                    # finds its way back to the caller.
+                    "regs": {
+                        reg: uc.reg_read(reg)
+                        for reg in (
+                            UC_X86_REG_EAX, UC_X86_REG_EBX,
+                            UC_X86_REG_ECX, UC_X86_REG_EDX,
+                            UC_X86_REG_ESI, UC_X86_REG_EDI,
+                            UC_X86_REG_EBP,
+                        )
+                    },
+                })
+                return
 
         if size == 1 and address in self._halt_sites:
             # `hlt` would end emulation, so do what the hardware does:
@@ -725,6 +1029,7 @@ class Machine:
     # ------------------------------------------------------------ run
     def run(self, max_instructions=80_000_000):
         """Emulate the machine until the instruction budget runs out."""
+        self._budget = max_instructions
         try:
             self.uc.emu_start(0x7C00, 0, 0, max_instructions)
         except UcError as exc:
@@ -732,14 +1037,11 @@ class Machine:
             self.stop_reason = f"{exc} at eip=0x{eip:08x}"
         else:
             self.stop_reason = "instruction budget exhausted"
+
         if self.idle:
             self.stop_reason = "idle: waiting for input"
         return self
 
-    def _interrupts_enabled(self):
-        return bool(self.uc.reg_read(UC_X86_REG_EFLAGS) & (1 << 9))
-
-    # --------------------------------------------------------- output
     def screen_lines(self):
         raw = self.uc.mem_read(VGA_BASE, VGA_WIDTH * VGA_HEIGHT * 2)
         lines = []
