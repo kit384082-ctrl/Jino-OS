@@ -20,12 +20,15 @@ with paging, and lands you in an interactive shell.
   real time clock             [ ok ]
   cpu identification          [ ok ]
   ata storage                 [ ok ]
+  jinofs filesystem           [ ok ]
   task scheduler              [ ok ]
 
 cpu: vendor GenuineIntel
 cpu: family 6, model 60, stepping 4
 cpu: features fpu tsc msr pae apic pge cmov mmx fxsr sse sse2 pse
-memory: 65148 KiB usable (16287 pages), kernel 1240 KiB, heap 1048576 bytes
+ata0: JINO VIRTUAL DISK, 2880 sectors (1 MiB)
+jinofs: 1 file(s), 512 bytes used, 261632 bytes free
+memory: 65148 KiB usable (16287 pages), kernel 1248 KiB, heap 1048576 bytes
 
 system ready.
 
@@ -80,6 +83,42 @@ where the kernel was placed.
 LBA 0        stage1 (512 bytes, ends in 0xAA55)
 LBA 1..8     stage2
 LBA 9..      the kernel image
+LBA 256      JinoFS superblock
+LBA 257..260 the directory, 64 entries
+LBA 261..    file data
+```
+
+The filesystem starts at a fixed offset, so `tools/mkimage.py` fails the
+build if the kernel ever grows into it rather than letting the first
+file written corrupt the kernel on disk.
+
+## Files
+
+`jinofs` is deliberately simple: files are stored contiguously, so a
+read is a single ATA request and the directory doubles as the allocation
+map. The directory is cached while mounted and written back after every
+change.
+
+```
+jino> format
+creating a filesystem on ata0...
+filesystem ready
+jino> write diary the disk remembers
+wrote diary (19 bytes)
+jino> ls
+  name              size   lba
+  diary               19   261
+1 file(s)
+jino> cat diary
+the disk remembers
+```
+
+A volume is mounted automatically at boot, so the contents survive a
+restart. To keep what the guest wrote when running under the emulator,
+add `--persist`:
+
+```sh
+python3 tools/simulate.py disk.img --keys 'write notes hello\r' --ata --persist
 ```
 
 ## What the kernel does
@@ -98,6 +137,7 @@ LBA 9..      the kernel image
 | Serial | `serial.asm` | 16550 UART on COM1, so the whole session can be captured headless. |
 | Keyboard | `keyboard.asm` | Scan code set 1, modifier tracking, extended keys, circular buffer, line editing. |
 | Storage | `ata.asm` | 28-bit LBA PIO reads and writes, with IDENTIFY parsing. |
+| Filesystem | `fs.asm` | JinoFS: a superblock, a 64 entry directory and contiguous files, mounted at boot and surviving a reboot. |
 | Clock | `rtc.asm` | MC146818 with BCD and 12/24-hour handling, read twice to avoid update races. |
 | Formatting | `printf.asm` | `%d %u %x %X %o %b %c %s %p %%`, width, zero padding and left alignment. |
 | Diagnostics | `panic.asm` | Named exceptions, full register and control register dump, and a stack trace. |
@@ -112,6 +152,8 @@ LBA 9..      the kernel image
 | `cpu`, `uname`, `date`, `uptime` | Machine identification and clocks. |
 | `alloc <n>`, `free` | Allocate and release heap memory, visible in `heap`. |
 | `peek <addr>`, `virt <addr>` | Read memory; translate a virtual address through the page tables. |
+| `ls`, `cat`, `write`, `rm` | List, read, store and delete files. |
+| `format`, `df` | Create a filesystem and show how full it is. |
 | `disk`, `read <lba>` | ATA drive information and a sector hex dump. |
 | `ps`, `spawn`, `preempt` | List tasks, run a cooperative worker, demonstrate preemption. |
 | `crash`, `panic` | Deliberately fault, to exercise the exception handler. |
@@ -129,7 +171,9 @@ It covers the image layout and boot signature, each bootloader stage,
 the hand-off block, every subsystem reporting ready, protected mode and
 paging being live, the shell commands, heap behaviour (including reuse
 and coalescing after a free), the ATA driver against an emulated drive,
-task creation and teardown, and preemptive scheduling.
+task creation, teardown and preemptive scheduling, and the filesystem —
+including that a file written on one boot is still readable on the next,
+and that the volume never overlaps the kernel.
 
 `tools/simulate.py` is the emulator behind this. It supplies the BIOS
 interrupts the bootloader needs, then models the devices the kernel
@@ -149,7 +193,7 @@ kernel/   entry.asm  kmain.asm  and the subsystems listed above
           kernel.inc  linker.ld
 tools/    mkimage.py  simulate.py
 tests/    test_boot.py  test_kernel.py  test_shell.py
-          test_disk.py  test_tasks.py
+          test_disk.py  test_tasks.py   test_fs.py
 ```
 
 ## Licence

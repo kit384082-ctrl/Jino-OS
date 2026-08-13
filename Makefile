@@ -38,6 +38,7 @@ KOBJS := \
 	$(BUILD)/rtc.o      \
 	$(BUILD)/cpu.o      \
 	$(BUILD)/ata.o      \
+	$(BUILD)/fs.o       \
 	$(BUILD)/task.o     \
 	$(BUILD)/panic.o    \
 	$(BUILD)/shell.o

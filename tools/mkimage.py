@@ -34,6 +34,12 @@ def main():
     parser.add_argument("--kernel-lba", type=int, default=9)
     parser.add_argument("--out", required=True)
     parser.add_argument("--size", type=int, default=FLOPPY_SIZE)
+    parser.add_argument(
+        "--fs-lba",
+        type=int,
+        default=256,
+        help="first sector of the filesystem; the kernel must stay below it",
+    )
     args = parser.parse_args()
 
     stage1 = read(args.stage1)
@@ -58,6 +64,17 @@ def main():
     if args.kernel_lba < args.stage2_lba + args.stage2_sectors:
         sys.exit("the kernel would overlap stage2")
 
+    # The filesystem lives at a fixed offset, so a kernel that grows past
+    # it would be overwritten by the first file written.  Catch that here
+    # rather than at run time.
+    kernel_end = args.kernel_lba + kernel_sectors
+    if args.fs_lba and kernel_end > args.fs_lba:
+        sys.exit(
+            f"the kernel ends at LBA {kernel_end} but the filesystem starts "
+            f"at LBA {args.fs_lba}; raise FS_SUPER_LBA in kernel/fs.asm "
+            f"or shrink the kernel"
+        )
+
     # --- lay the image out --------------------------------------------
     image = bytearray(args.size)
 
@@ -81,7 +98,8 @@ def main():
         f"  stage2 {len(stage2):>7} bytes  -> LBA {args.stage2_lba}"
         f" ({args.stage2_sectors} sectors reserved)\n"
         f"  kernel {len(kernel):>7} bytes  -> LBA {args.kernel_lba}"
-        f" ({kernel_sectors} sectors)\n"
+        f" ({kernel_sectors} sectors, {args.fs_lba - kernel_end} spare"
+        f" before the filesystem)\n"
         f"  total  {len(image):>7} bytes"
     )
 

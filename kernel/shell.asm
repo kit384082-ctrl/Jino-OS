@@ -49,6 +49,15 @@
                 extern  task_yield
                 extern  task_reap
                 extern  task_set_preemption
+                extern  fs_init
+                extern  fs_format
+                extern  fs_mounted
+                extern  fs_create
+                extern  fs_read
+                extern  fs_delete
+                extern  fs_list
+                extern  fs_print_info
+                extern  fs_max_file_size
                 extern  paging_get_physical
                 extern  paging_fault_count
                 extern  paging_is_enabled
@@ -57,6 +66,7 @@
 
 CMDLINE_MAX     equ     256
 MAX_ARGS        equ     16
+FILEBUF_MAX     equ     1024
 
                 section .text
 
@@ -182,30 +192,65 @@ shell_execute:
 ; =====================================================================
 
 ; ---------------------------------------------------------------- help
+;  With no argument the commands are listed by group, which fits the
+;  25 line screen; "help <name>" describes a single command.
 cmd_help:
                 push    ebx
                 push    esi
 
-                push    dword msg_help_header
-                call    kprintf
-                add     esp, 4
+                cmp     dword [argc], 2
+                jae     .one
 
+                CALL1   kprintf, msg_help_header
+
+                mov     esi, help_groups
+.group:
+                mov     eax, [esi]              ; group title
+                test    eax, eax
+                jz      .footer
+
+                CALL2   kprintf, fmt_group, eax
+                mov     ebx, [esi + 4]          ; NULL terminated name list
+.name:
+                mov     eax, [ebx]
+                test    eax, eax
+                jz      .group_done
+                CALL2   kprintf, fmt_group_item, eax
+                add     ebx, 4
+                jmp     .name
+.group_done:
+                CALL1   kprintf, fmt_nl
+                add     esi, 8
+                jmp     .group
+.footer:
+                CALL1   kprintf, msg_help_footer
+                jmp     .done
+
+                ; help <name>
+.one:
                 mov     esi, command_table
-.loop:
+.search:
                 mov     eax, [esi]
                 test    eax, eax
-                jz      .done
+                jz      .unknown
 
                 push    esi
+                CALL2   strcmp, eax, dword [argv + 4]
+                pop     esi
+                test    eax, eax
+                jz      .found
+
+                add     esi, 12
+                jmp     .search
+.found:
                 push    dword [esi + 8]         ; help text
-                push    eax                     ; name
+                push    dword [esi]             ; name
                 push    dword fmt_help
                 call    kprintf
                 add     esp, 12
-                pop     esi
-
-                add     esi, 12
-                jmp     .loop
+                jmp     .done
+.unknown:
+                CALL2   kprintf, fmt_help_unknown, dword [argv + 4]
 .done:
                 pop     esi
                 pop     ebx
@@ -547,6 +592,180 @@ spinner_task:
                 xor     eax, eax
                 ret
 
+; ----------------------------------------------------------------- ls
+cmd_ls:
+                call    fs_list
+                ret
+
+; ----------------------------------------------------------------- df
+cmd_df:
+                call    fs_print_info
+                ret
+
+; ------------------------------------------------------------- format
+cmd_format:
+                cmp     dword [ata_present], 0
+                je      .no_disk
+
+                CALL1   kprintf, msg_formatting
+                call    fs_format
+                test    eax, eax
+                jz      .failed
+
+                CALL1   kprintf, msg_formatted
+                ret
+.failed:
+                CALL1   kprintf, msg_format_failed
+                ret
+.no_disk:
+                CALL1   kprintf, msg_no_disk
+                ret
+
+; -------------------------------------------------------------- write
+;  write <name> <text...>
+;
+;  The remaining arguments are joined with single spaces, which is the
+;  most useful reading of a command line for a plain text file.
+cmd_write:
+                push    ebx
+                push    esi
+                push    edi
+
+                cmp     dword [fs_mounted], 0
+                je      .unmounted
+                cmp     dword [argc], 3
+                jb      .usage
+
+                mov     edi, filebuf            ; build the payload here
+                mov     ebx, 2                  ; argv[2] onwards
+.join:
+                cmp     ebx, [argc]
+                jae     .joined
+
+                cmp     ebx, 2
+                je      .copy
+                mov     byte [edi], ' '         ; separator
+                inc     edi
+.copy:
+                mov     esi, [argv + ebx * 4]
+.chars:
+                mov     al, [esi]
+                test    al, al
+                jz      .next_arg
+                ; keep one byte spare for the trailing newline
+                mov     ecx, edi
+                sub     ecx, filebuf
+                cmp     ecx, FILEBUF_MAX - 2
+                jae     .joined
+                mov     [edi], al
+                inc     edi
+                inc     esi
+                jmp     .chars
+.next_arg:
+                inc     ebx
+                jmp     .join
+.joined:
+                mov     byte [edi], 10          ; a text file ends in a newline
+                inc     edi
+
+                mov     ecx, edi
+                sub     ecx, filebuf            ; payload length
+
+                push    ecx
+                push    dword filebuf
+                push    dword [argv + 4]
+                call    fs_create
+                add     esp, 12
+                test    eax, eax
+                jz      .failed
+
+                mov     ecx, edi
+                sub     ecx, filebuf
+                push    ecx
+                push    dword [argv + 4]
+                push    dword fmt_written
+                call    kprintf
+                add     esp, 12
+                jmp     .done
+.failed:
+                CALL1   kprintf, msg_write_failed
+                jmp     .done
+.usage:
+                CALL1   kprintf, msg_write_usage
+                jmp     .done
+.unmounted:
+                CALL1   kprintf, msg_unmounted
+.done:
+                pop     edi
+                pop     esi
+                pop     ebx
+                ret
+
+; ---------------------------------------------------------------- cat
+cmd_cat:
+                push    ebx
+
+                cmp     dword [fs_mounted], 0
+                je      .unmounted
+                cmp     dword [argc], 2
+                jb      .usage
+
+                push    dword FILEBUF_MAX - 1
+                push    dword filebuf
+                push    dword [argv + 4]
+                call    fs_read
+                add     esp, 12
+
+                cmp     eax, -1
+                je      .missing
+
+                mov     ebx, eax
+                mov     byte [filebuf + ebx], 0 ; terminate for %s
+                CALL2   kprintf, fmt_word_raw, filebuf
+
+                ; a file without a trailing newline would run into the
+                ; prompt, so supply one
+                test    ebx, ebx
+                jz      .done
+                cmp     byte [filebuf + ebx - 1], 10
+                je      .done
+                CALL1   kprintf, fmt_nl
+                jmp     .done
+.missing:
+                CALL2   kprintf, fmt_no_file, dword [argv + 4]
+                jmp     .done
+.usage:
+                CALL1   kprintf, msg_cat_usage
+                jmp     .done
+.unmounted:
+                CALL1   kprintf, msg_unmounted
+.done:
+                pop     ebx
+                ret
+
+; ----------------------------------------------------------------- rm
+cmd_rm:
+                cmp     dword [fs_mounted], 0
+                je      .unmounted
+                cmp     dword [argc], 2
+                jb      .usage
+
+                CALL1   fs_delete, dword [argv + 4]
+                test    eax, eax
+                jz      .missing
+
+                CALL2   kprintf, fmt_removed, dword [argv + 4]
+                ret
+.missing:
+                CALL2   kprintf, fmt_no_file, dword [argv + 4]
+                ret
+.usage:
+                CALL1   kprintf, msg_rm_usage
+                ret
+.unmounted:
+                CALL1   kprintf, msg_unmounted
+                ret
+
 ; The body of the spawned task: print a few lines and return, which
 ; sends it through task_exit.
 worker_task:
@@ -780,6 +999,16 @@ delims:         db      " ", 9, 0
 
 msg_welcome:    db      10, "Type 'help' for the list of commands.", 10, 10, 0
 msg_help_header: db     "commands:", 10, 0
+msg_help_footer: db     "type 'help <command>' for details", 10, 0
+fmt_group:      db      "  %-10s", 0
+fmt_group_item: db      "%s ", 0
+fmt_help_unknown: db    "no such command: %s", 10, 0
+
+g_system:       db      "system", 0
+g_memory:       db      "memory", 0
+g_files:        db      "files", 0
+g_tasks:        db      "tasks", 0
+g_debug:        db      "debug", 0
 fmt_help:       db      "  %-10s %s", 10, 0
 fmt_unknown:    db      "unknown command: %s (try 'help')", 10, 0
 fmt_word:       db      "%s ", 0
@@ -807,6 +1036,18 @@ worker_name:    db      "worker", 0
 fmt_spawned:    db      "spawned task %u", 10, 0
 msg_spawn_failed: db    "could not create the task", 10, 0
 fmt_worker:     db      "  worker running, iteration %u", 10, 0
+msg_formatting: db      "creating a filesystem on ata0...", 10, 0
+msg_formatted:  db      "filesystem ready", 10, 0
+msg_format_failed: db   "format failed", 10, 0
+msg_unmounted:  db      "no filesystem mounted (try: format)", 10, 0
+msg_write_usage: db     "usage: write <name> <text...>", 10, 0
+msg_cat_usage:  db      "usage: cat <name>", 10, 0
+msg_rm_usage:   db      "usage: rm <name>", 10, 0
+msg_write_failed: db    "write failed: the name may be too long or the disk full", 10, 0
+fmt_written:    db      "wrote %s (%u bytes)", 10, 0
+fmt_removed:    db      "removed %s", 10, 0
+fmt_word_raw:   db      "%s", 0
+fmt_no_file:    db      "no such file: %s", 10, 0
 spinner_name:   db      "spinner", 0
 fmt_preempt:    db      "preempted spinner reached %u iterations", 10, 0
 msg_read_usage: db      "usage: read <lba>", 10, 0
@@ -852,6 +1093,12 @@ c_read:     db "read", 0
 c_ps:       db "ps", 0
 c_spawn:    db "spawn", 0
 c_preempt:  db "preempt", 0
+c_ls:       db "ls", 0
+c_cat:      db "cat", 0
+c_write:    db "write", 0
+c_rm:       db "rm", 0
+c_format:   db "format", 0
+c_df:       db "df", 0
 c_alloc:    db "alloc", 0
 c_free:     db "free", 0
 c_peek:     db "peek", 0
@@ -878,6 +1125,12 @@ h_read:     db "hex dump a disk sector", 0
 h_ps:       db "list kernel tasks", 0
 h_spawn:    db "start a demo kernel task", 0
 h_preempt:  db "demonstrate preemptive scheduling", 0
+h_ls:       db "list the files on the disk", 0
+h_cat:      db "print a file: cat <name>", 0
+h_write:    db "store a file: write <name> <text>", 0
+h_rm:       db "delete a file: rm <name>", 0
+h_format:   db "create a fresh filesystem", 0
+h_df:       db "filesystem usage", 0
 h_alloc:    db "allocate heap memory", 0
 h_free:     db "release the last allocation", 0
 h_peek:     db "read a memory address", 0
@@ -889,6 +1142,23 @@ h_panic:    db "trigger a kernel panic", 0
 h_crash:    db "trigger a divide by zero", 0
 
                 align   4
+; The names shown under each heading by a bare "help".
+                align   4
+l_system:       dd c_help, c_clear, c_echo, c_uname, c_cpu, c_uptime
+                dd c_date, c_colors, c_about, 0
+l_memory:       dd c_mem, c_memmap, c_heap, c_alloc, c_free, c_peek, c_virt, 0
+l_files:        dd c_ls, c_cat, c_write, c_rm, c_format, c_df, c_disk, c_read, 0
+l_tasks:        dd c_ps, c_spawn, c_preempt, c_sleep, 0
+l_debug:        dd c_panic, c_crash, 0
+
+help_groups:
+                dd g_system, l_system
+                dd g_memory, l_memory
+                dd g_files,  l_files
+                dd g_tasks,  l_tasks
+                dd g_debug,  l_debug
+                dd 0, 0
+
 command_table:
                 dd c_help,   cmd_help,   h_help
                 dd c_clear,  cmd_clear,  h_clear
@@ -905,6 +1175,12 @@ command_table:
                 dd c_ps,     cmd_ps,     h_ps
                 dd c_spawn,  cmd_spawn,  h_spawn
                 dd c_preempt, cmd_preempt, h_preempt
+                dd c_ls,     cmd_ls,     h_ls
+                dd c_cat,    cmd_cat,    h_cat
+                dd c_write,  cmd_write,  h_write
+                dd c_rm,     cmd_rm,     h_rm
+                dd c_format, cmd_format, h_format
+                dd c_df,     cmd_df,     h_df
                 dd c_alloc,  cmd_alloc,  h_alloc
                 dd c_free,   cmd_free,   h_free
                 dd c_peek,   cmd_peek,   h_peek
@@ -930,3 +1206,4 @@ spin_stop:      resd    1
 timebuf:        resb    64
                 alignb  4
 sector_buffer:  resb    512
+filebuf:        resb    FILEBUF_MAX

@@ -119,6 +119,9 @@ class Machine:
         self.ata_status = 0x50 if self.ata_enabled else 0x00  # RDY | DSC
         self.ata_lba_mid = 0
         self.ata_lba_hi = 0
+        self.ata_writing = False
+        self.ata_write_lba = 0
+        self.ata_write_bytes = 0
 
         # 16550 UART state
         self.uart_lcr = 0
@@ -483,6 +486,21 @@ class Machine:
         return self.ata_regs.get(port, 0)
 
     def _ata_write(self, port, value):
+        # The data register carries the payload of a WRITE SECTORS, not a
+        # register value, so it is handled before anything else.
+        if port == 0x1F0:
+            if self.ata_writing:
+                self.ata_buffer += (value & 0xFFFF).to_bytes(2, "little")
+                if len(self.ata_buffer) >= self.ata_write_bytes:
+                    start = self.ata_write_lba * SECTOR
+                    end = start + self.ata_write_bytes
+                    if end > len(self.disk):
+                        self.disk.extend(b"\x00" * (end - len(self.disk)))
+                    self.disk[start:end] = self.ata_buffer[: self.ata_write_bytes]
+                    self.ata_writing = False
+                    self.ata_status = 0x50  # DRQ down, transfer complete
+            return
+
         self.ata_regs[port] = value & 0xFF
 
         if port != 0x1F7:
@@ -506,6 +524,18 @@ class Machine:
             self.ata_buffer = bytearray(self._read_disk(lba, count))
             self.ata_pos = 0
             self.ata_status = 0x58
+        elif command == 0x30:  # WRITE SECTORS
+            count = self.ata_regs.get(0x1F2, 1) or 256
+            self.ata_write_lba = (
+                self.ata_regs.get(0x1F3, 0)
+                | (self.ata_regs.get(0x1F4, 0) << 8)
+                | (self.ata_regs.get(0x1F5, 0) << 16)
+                | ((self.ata_regs.get(0x1F6, 0) & 0x0F) << 24)
+            )
+            self.ata_write_bytes = count * SECTOR
+            self.ata_buffer = bytearray()
+            self.ata_writing = True
+            self.ata_status = 0x58  # RDY | DSC | DRQ, waiting for data
         elif command == 0xE7:  # FLUSH CACHE
             self.ata_status = 0x50
         else:
@@ -606,7 +636,8 @@ class Machine:
 
         # ---- ATA (IDE) primary channel ------------------------------
         if 0x1F0 <= port <= 0x1F7 or port == 0x3F6:
-            self._ata_write(port, value)
+            if self.ata_enabled:
+                self._ata_write(port, value)
             return
 
         # ---- CRT controller ------------------------------------------
@@ -744,6 +775,11 @@ def main():
         "--ata", action="store_true", help="attach the image as an IDE drive"
     )
     parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="write any changes the guest made back to the image file",
+    )
+    parser.add_argument(
         "--timer",
         type=int,
         default=0,
@@ -761,6 +797,14 @@ def main():
     if args.timer:
         machine.enable_timer(args.timer)
     machine.run(args.instructions)
+
+    if args.persist:
+        if not args.ata:
+            print("--persist needs --ata, nothing was written")
+        elif bytes(machine.disk) != image:
+            with open(args.image, "wb") as handle:
+                handle.write(bytes(machine.disk))
+            print(f"wrote the guest's changes back to {args.image}")
 
     print("=" * 72)
     print("VGA text screen")

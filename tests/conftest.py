@@ -30,11 +30,17 @@ def booted(image):
     return Machine(image).run()
 
 
-def boot_with(image, keys: str = "", timer: int = 0, instructions=80_000_000):
+def boot_with(
+    image,
+    keys: str = "",
+    timer: int = 0,
+    instructions=80_000_000,
+    ata: bool = False,
+):
     """Boot a fresh machine, optionally typing `keys` into the shell."""
     from simulate import Machine
 
-    machine = Machine(image, keystrokes=keys.encode("latin-1"))
+    machine = Machine(image, keystrokes=keys.encode("latin-1"), ata=ata)
     if timer:
         machine.enable_timer(timer)
     return machine.run(instructions)

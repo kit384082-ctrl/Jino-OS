@@ -44,6 +44,27 @@ class TestCommands:
         for command in ("help", "clear", "mem", "cpu", "uptime", "ps"):
             assert command in output
 
+    def test_help_fits_on_the_screen(self, image):
+        """
+        The listing has to stay short enough that the top of it does not
+        scroll away before the user can read it.
+        """
+        machine = boot_with(image, "help\r")
+        lines = machine.screen_lines()
+        assert any("commands:" in line for line in lines)
+
+    def test_help_groups_the_commands(self, image):
+        output = screen_after(image, "help\r")
+        for group in ("system", "memory", "files", "tasks", "debug"):
+            assert group in output
+
+    def test_help_describes_a_single_command(self, image):
+        output = screen_after(image, "help uname\r")
+        assert "uname      system identification" in output
+
+    def test_help_rejects_an_unknown_command(self, image):
+        assert "no such command: bogus" in screen_after(image, "help bogus\r")
+
     def test_echo_repeats_its_arguments(self, image):
         output = screen_after(image, "echo hello world\r")
         assert "hello world" in output

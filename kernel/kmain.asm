@@ -39,6 +39,8 @@
                 extern  heap_total
                 extern  ata_init
                 extern  ata_print_info
+                extern  fs_init
+                extern  fs_print_info
                 extern  task_init
                 extern  shell_run
                 extern  panic
@@ -140,6 +142,11 @@ kmain:
                 call    ata_init
                 call    step_ok
 
+                ; ---- filesystem --------------------------------------
+                call    step_fs
+                call    fs_init
+                call    step_ok
+
                 ; ---- tasking -----------------------------------------
                 call    step_task
                 call    task_init
@@ -161,6 +168,7 @@ kmain:
 
                 call    cpu_print_info
                 call    ata_print_info
+                call    fs_print_info
                 call    report_memory
 
                 push    dword msg_ready
@@ -317,6 +325,7 @@ STEP step_keyboard, s_keyboard
 STEP step_rtc,      s_rtc
 STEP step_cpu,      s_cpu
 STEP step_ata,      s_ata
+STEP step_fs,       s_fs
 STEP step_task,     s_task
 
 step_ok:
@@ -352,6 +361,7 @@ s_keyboard:     db      "ps/2 keyboard", 0
 s_rtc:          db      "real time clock", 0
 s_cpu:          db      "cpu identification", 0
 s_ata:          db      "ata storage", 0
+s_fs:           db      "jinofs filesystem", 0
 s_task:         db      "task scheduler", 0
 
 fmt_memory:     db      "memory: %u KiB usable (%u pages), kernel %u KiB, heap %u bytes", 10, 0

@@ -358,10 +358,13 @@ ata_write_sectors:
                 jmp     .sector_loop
 
 .flush:
+                ; A cache flush returns no data, so waiting on DRQ here
+                ; would spin until the timeout; wait for the drive to go
+                ; ready again instead.
                 mov     dx, ATA_COMMAND
                 mov     al, CMD_FLUSH
                 out     dx, al
-                call    ata_poll
+                call    ata_wait_ready
 
                 mov     eax, 1
                 jmp     .done
