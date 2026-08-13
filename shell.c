@@ -1,7 +1,9 @@
+#ifndef TEST_MODE
 #include "gui.h"
 #include "../drivers/vga.h"
 #include "../lib/types.h"
 #include "../kernel/memory.h"
+#endif
 
 #define MAX_WINDOWS 16
 #define SCREEN_W 320

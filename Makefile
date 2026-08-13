@@ -16,3 +16,8 @@ SECTIONS
         *(.bss)
     }
 }
+
+test:
+	mkdir -p tests
+	gcc -o tests/test_shell tests/test_shell.c
+	./tests/test_shell
