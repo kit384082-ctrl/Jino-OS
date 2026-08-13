@@ -197,6 +197,12 @@ def print_error(code, context="", extra=""):
         print(f"{C_CYAN}│ Доп: {extra}{C_RESET}")
     print(f"{C_RED}{C_BOLD}└─{C_RESET}")
 
+def check_args(args, min_len, context, extra=""):
+    if len(args) < min_len:
+        print_error("JNO-009", context, extra)
+        return False
+    return True
+
 def load_repo():
     try:
         with open(REPO_PATH,'r') as f: return json.load(f)
@@ -624,9 +630,7 @@ class JinoOS:
 
     # JPKG / SRV (with enhanced errors)
     def cmd_jpkg(self,args):
-        if not args:
-            print_error("JNO-009","jpkg без аргументов","Используй: jpkg list, jpkg install <pkg>")
-            return
+        if not check_args(args, 1, "jpkg без аргументов", "Используй: jpkg list, jpkg install <pkg>"): return
         sub=args[0]
         if sub=="list":
             filt=args[1] if len(args)>1 else None
@@ -647,9 +651,7 @@ class JinoOS:
                 print(f"Search '{term}' {len(res)} found:")
                 for p in res: print(f" {p['name']:<20} {p.get('description','')}")
         elif sub=="install":
-            if len(args)<2:
-                print_error("JNO-009","jpkg install без имени пакета","Пример: jpkg install nginx --port 8080 --name myweb")
-                return
+            if not check_args(args, 2, "jpkg install без имени пакета", "Пример: jpkg install nginx --port 8080 --name myweb"): return
             pkg_name=args[1]; port=None; custom_name=None; root=None; i=2
             while i < len(args):
                 if args[i]=="--port" and i+1<len(args):
@@ -673,18 +675,14 @@ class JinoOS:
             else:
                 print(f"{C_GREEN}{msg}{C_RESET}")
         elif sub in ("uninstall","remove"):
-            if len(args)<2:
-                print_error("JNO-009","jpkg uninstall без имени","Пример: jpkg uninstall myweb или srv delete myweb")
-                return
+            if not check_args(args, 2, "jpkg uninstall без имени", "Пример: jpkg uninstall myweb или srv delete myweb"): return
             ok,msg=self.srv_manager.delete(args[1])
             if not ok:
                 print_error("JNO-011",msg,f"Проверь srv list")
             else:
                 print(msg)
         elif sub=="info":
-            if len(args)<2:
-                print_error("JNO-009","jpkg info без имени","Пример: jpkg info nginx")
-                return
+            if not check_args(args, 2, "jpkg info без имени", "Пример: jpkg info nginx"): return
             pkg=self.pkg_manager.get_pkg(args[1])
             if not pkg:
                 print_error("JNO-012",f"Пакет {args[1]} не найден","jpkg list покажет все")
