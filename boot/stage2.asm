@@ -9,7 +9,9 @@
 ;    2.  Enable the A20 gate so we can address memory above 1 MiB.
 ;    3.  Read the kernel image off the boot device and copy it to
 ;        physical 0x00100000 through "unreal mode".
-;    4.  Install a flat GDT, switch the CPU into 32-bit protected mode
+;    4.  Ask VBE for a 32-bit linear framebuffer, since the BIOS is the
+;        only thing that can set one up and it is about to go away.
+;    5.  Install a flat GDT, switch the CPU into 32-bit protected mode
 ;        and jump into the kernel with a boot-information block.
 ; =====================================================================
 
@@ -28,6 +30,12 @@
 KERNEL_PHYS     equ     0x00100000      ; where the kernel is assembled for
 DISK_BUF        equ     0x00010000      ; 64 KiB scratch below 1 MiB
 DISK_BUF_SEG    equ     0x1000
+
+; Scratch for the VBE queries.  These are 512 and 256 byte structures
+; the BIOS fills in, so they live in low memory that is already spoken
+; for rather than being emitted as zeros into the loader image.
+vbe_info        equ     0x00000800      ; 512 bytes, above the boot info
+mode_info       equ     0x00000A00      ; 256 bytes
 CHUNK_SECTORS   equ     32              ; 16 KiB per BIOS call
 
 ; ---------------------------------------------------------------------
@@ -50,6 +58,7 @@ stage2_entry:
                 call    detect_memory
                 call    enable_a20
                 call    load_kernel
+                call    set_video_mode
 
                 mov     si, msg_pmode
                 call    puts
@@ -396,6 +405,110 @@ disk_read:
                 jmp     .halt
 
 ; ---------------------------------------------------------------------
+; set_video_mode — ask VBE for a linear 32-bit framebuffer.
+;
+;   Mode numbers are not portable between cards, so the supported list
+;   is walked and each candidate interrogated instead of guessing.  We
+;   want the exact geometry in WANT_W x WANT_H at 32bpp, packed pixels
+;   with a linear frame buffer.
+;
+;   Failure is not fatal: the boot info framebuffer address stays zero
+;   and the kernel keeps the text console.
+; ---------------------------------------------------------------------
+WANT_W          equ     1024
+WANT_H          equ     768
+WANT_BPP        equ     32
+
+set_video_mode:
+                pusha
+                push    es
+
+                ; ---- is there a VBE BIOS at all? ---------------------
+                mov     di, vbe_info
+                mov     dword [di], 'VBE2'      ; ask for VBE 2 fields
+                mov     ax, 0x4F00
+                int     0x10
+                cmp     ax, 0x004F
+                jne     .give_up
+                cmp     dword [vbe_info], 'VESA'
+                jne     .give_up
+
+                ; ---- walk the mode list -----------------------------
+                ; The pointer is real-mode seg:off and may live in ROM,
+                ; so it is read through es rather than assumed to be in
+                ; our own segment.
+                mov     ax, [vbe_info + 16]     ; offset
+                mov     [mode_off], ax
+                mov     ax, [vbe_info + 18]     ; segment
+                mov     [mode_seg], ax
+
+.next_mode:
+                mov     ax, [mode_seg]
+                mov     es, ax
+                mov     bx, [mode_off]
+                mov     ax, [es:bx]
+                add     word [mode_off], 2
+
+                cmp     ax, 0xFFFF              ; end of the list
+                je      .give_up
+                mov     [this_mode], ax
+
+                ; ---- what is this mode like? ------------------------
+                push    ds
+                pop     es
+                mov     di, mode_info
+                mov     cx, [this_mode]
+                mov     ax, 0x4F01
+                int     0x10
+                cmp     ax, 0x004F
+                jne     .next_mode
+
+                ; attributes: bit 0 supported, bit 4 graphics, bit 7 LFB
+                mov     ax, [mode_info + 0]
+                test    ax, 1 << 0
+                jz      .next_mode
+                test    ax, 1 << 4
+                jz      .next_mode
+                test    ax, 1 << 7
+                jz      .next_mode
+
+                cmp     word [mode_info + 18], WANT_W
+                jne     .next_mode
+                cmp     word [mode_info + 20], WANT_H
+                jne     .next_mode
+                cmp     byte [mode_info + 25], WANT_BPP
+                jne     .next_mode
+                cmp     byte [mode_info + 27], 6        ; direct colour
+                jne     .next_mode
+
+                ; ---- take it ----------------------------------------
+                mov     bx, [this_mode]
+                or      bx, 0x4000              ; bit 14: linear framebuffer
+                mov     ax, 0x4F02
+                int     0x10
+                cmp     ax, 0x004F
+                jne     .give_up
+
+                ; ---- hand the geometry to the kernel ----------------
+                mov     eax, [mode_info + 40]   ; physical base address
+                mov     [BOOTINFO_ADDR + BI_FB_ADDR], eax
+                movzx   eax, word [mode_info + 16]      ; bytes per scanline
+                mov     [BOOTINFO_ADDR + BI_FB_PITCH], eax
+                movzx   eax, word [mode_info + 18]
+                mov     [BOOTINFO_ADDR + BI_FB_WIDTH], eax
+                movzx   eax, word [mode_info + 20]
+                mov     [BOOTINFO_ADDR + BI_FB_HEIGHT], eax
+                movzx   eax, byte [mode_info + 25]
+                mov     [BOOTINFO_ADDR + BI_FB_BPP], eax
+                movzx   eax, word [this_mode]
+                mov     [BOOTINFO_ADDR + BI_FB_MODE], eax
+
+.give_up:
+                pop     es
+                popa
+                ret
+
+; ---------------------------------------------------------------------
 ; unreal_mode — briefly enter protected mode to load FS/GS with 4 GiB
 ;               segment limits, then drop back to real mode.
 ; ---------------------------------------------------------------------
@@ -500,6 +613,10 @@ heads:          dw      2
 rd_lba:         dd      0
 rd_count:       dw      0
 rd_seg:         dw      0
+
+mode_seg:       dw      0
+mode_off:       dw      0
+this_mode:      dw      0
 
 cur_lba:        dd      0
 cur_dest:       dd      0

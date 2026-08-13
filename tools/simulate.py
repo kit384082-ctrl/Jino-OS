@@ -90,6 +90,17 @@ VGA_BASE = 0xB8000
 VGA_WIDTH = 80
 VGA_HEIGHT = 25
 
+# The one graphics mode this BIOS offers: 1024x768 in 32-bit colour with
+# a linear framebuffer.  The address is above the 16 MiB the kernel
+# identity maps, so that mapping it is a real exercise of the page
+# tables rather than something that happens to work already.
+VBE_MODE = 0x0118
+FB_WIDTH = 1024
+FB_HEIGHT = 768
+FB_BPP = 32
+FB_PITCH = FB_WIDTH * (FB_BPP // 8)
+FB_BASE = 0x02000000
+
 CF = 1 << 0
 ZF = 1 << 6
 
@@ -141,6 +152,7 @@ class Machine:
         self._int80_sites = frozenset()
         self._iret_sites = frozenset()
         self.user_uc = None
+        self.framebuffer = 0
         self.instructions = 0
         self.ata_writing = False
         self.ata_write_lba = 0
@@ -488,6 +500,79 @@ class Machine:
         ah = uc.reg_read(UC_X86_REG_AH)
         if ah == 0x0E:
             self.teletype.append(uc.reg_read(UC_X86_REG_AL))
+            return
+
+        ax = uc.reg_read(UC_X86_REG_AX)
+        if ax == 0x4F00:
+            self._vbe_controller_info(uc)
+        elif ax == 0x4F01:
+            self._vbe_mode_info(uc)
+        elif ax == 0x4F02:
+            self._vbe_set_mode(uc)
+
+    # ---- VBE : the only way to get a framebuffer -------------------
+    def _vbe_controller_info(self, uc):
+        """VBE 2.0 controller info, including the supported mode list."""
+        base = (uc.reg_read(UC_X86_REG_ES) << 4) + uc.reg_read(UC_X86_REG_DI)
+
+        # The mode list has to live somewhere the caller can read; park
+        # it just past the structure the BIOS fills in.
+        modes_at = base + 512
+        uc.mem_write(
+            modes_at,
+            VBE_MODE.to_bytes(2, "little") + b"\xff\xff",
+        )
+
+        block = bytearray(512)
+        block[0:4] = b"VESA"
+        block[4:6] = (0x0200).to_bytes(2, "little")  # VBE 2.0
+        # Far pointer to the mode list, as offset:segment.
+        block[14:16] = (modes_at & 0xF).to_bytes(2, "little")
+        block[16:18] = (modes_at >> 4).to_bytes(2, "little")
+        block[18:20] = (4096).to_bytes(2, "little")  # 256 KiB blocks
+        uc.mem_write(base, bytes(block))
+
+        # stage2 reads the pointer from offsets 16 and 18, so write it
+        # the way it expects: offset first, then segment.
+        uc.mem_write(base + 16, (modes_at & 0xF).to_bytes(2, "little"))
+        uc.mem_write(base + 18, (modes_at >> 4).to_bytes(2, "little"))
+
+        uc.reg_write(UC_X86_REG_AX, 0x004F)
+
+    def _vbe_mode_info(self, uc):
+        """Describe a mode, or refuse if it is not the one we offer."""
+        if uc.reg_read(UC_X86_REG_CX) != VBE_MODE:
+            uc.reg_write(UC_X86_REG_AX, 0x014F)  # not supported
+            return
+
+        block = bytearray(256)
+        # attributes: supported, colour, graphics, linear framebuffer
+        block[0:2] = (0x0001 | 0x0008 | 0x0010 | 0x0080).to_bytes(2, "little")
+        block[16:18] = FB_PITCH.to_bytes(2, "little")
+        block[18:20] = FB_WIDTH.to_bytes(2, "little")
+        block[20:22] = FB_HEIGHT.to_bytes(2, "little")
+        block[25] = FB_BPP
+        block[27] = 6  # direct colour
+        # the channel layout the kernel will assume: 8:8:8 as BGRX
+        block[31] = 8   # red mask size
+        block[32] = 16  # red field position
+        block[33] = 8   # green mask size
+        block[34] = 8   # green field position
+        block[35] = 8   # blue mask size
+        block[36] = 0   # blue field position
+        block[40:44] = FB_BASE.to_bytes(4, "little")
+
+        base = (uc.reg_read(UC_X86_REG_ES) << 4) + uc.reg_read(UC_X86_REG_DI)
+        uc.mem_write(base, bytes(block))
+        uc.reg_write(UC_X86_REG_AX, 0x004F)
+
+    def _vbe_set_mode(self, uc):
+        bx = uc.reg_read(UC_X86_REG_BX)
+        if bx & 0x01FF != VBE_MODE or not bx & 0x4000:
+            uc.reg_write(UC_X86_REG_AX, 0x014F)
+            return
+        self.framebuffer = FB_BASE
+        uc.reg_write(UC_X86_REG_AX, 0x004F)
 
     # ---- INT 12h : conventional memory size ------------------------
     def _int12(self, uc):

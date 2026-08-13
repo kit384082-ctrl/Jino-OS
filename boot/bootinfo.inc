@@ -21,6 +21,16 @@ BI_KERNEL_LBA       equ 24                  ; dd  where we came from
 BI_KERNEL_SECT      equ 28                  ; dd  kernel size in sectors
 BI_KERNEL_PHYS      equ 32                  ; dd  load address
 
+; Linear framebuffer, filled in by stage2 when VBE gives us one.  A zero
+; address means the mode set failed and the kernel should stay on the
+; 80x25 text console.
+BI_FB_ADDR          equ 36                  ; dd  physical base
+BI_FB_PITCH         equ 40                  ; dd  bytes per scanline
+BI_FB_WIDTH         equ 44                  ; dd  pixels across
+BI_FB_HEIGHT        equ 48                  ; dd  pixels down
+BI_FB_BPP           equ 52                  ; dd  bits per pixel
+BI_FB_MODE          equ 56                  ; dd  the VBE mode number
+
 E820_ADDR           equ 0x00000600
 E820_MAX            equ 48
 E820_ENTRY_SIZE     equ 24

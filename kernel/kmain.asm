@@ -12,6 +12,7 @@
                 global  kernel_version
 
                 extern  vga_init
+                extern  vga_use_framebuffer
                 extern  vga_clear
                 extern  vga_puts
                 extern  vga_set_color
@@ -119,6 +120,13 @@ kmain:
                 ; ---- paging ------------------------------------------
                 call    step_paging
                 call    paging_init
+                call    step_ok
+
+                ; ---- graphics ----------------------------------------
+                ; After paging, because the framebuffer lives above the
+                ; identity mapped region and has to be mapped in.
+                call    step_video
+                call    vga_use_framebuffer
                 call    step_ok
 
                 ; ---- the kernel heap ---------------------------------
@@ -291,6 +299,7 @@ STEP step_pic,      s_pic
 STEP step_pit,      s_pit
 STEP step_pmm,      s_pmm
 STEP step_paging,   s_paging
+STEP step_video,    s_video
 STEP step_heap,     s_heap
 STEP step_keyboard, s_keyboard
 STEP step_rtc,      s_rtc
@@ -328,6 +337,7 @@ s_pic:          db      "interrupt controller", 0
 s_pit:          db      "interval timer", 0
 s_pmm:          db      "physical memory manager", 0
 s_paging:       db      "paging", 0
+s_video:        db      "video", 0
 s_heap:         db      "kernel heap", 0
 s_keyboard:     db      "ps/2 keyboard", 0
 s_rtc:          db      "real time clock", 0

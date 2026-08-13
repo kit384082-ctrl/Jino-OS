@@ -18,6 +18,12 @@ BI_HIGHMEM_KB       equ 20
 BI_KERNEL_LBA       equ 24
 BI_KERNEL_SECT      equ 28
 BI_KERNEL_PHYS      equ 32
+BI_FB_ADDR          equ 36                  ; 0 when there is no framebuffer
+BI_FB_PITCH         equ 40
+BI_FB_WIDTH         equ 44
+BI_FB_HEIGHT        equ 48
+BI_FB_BPP           equ 52
+BI_FB_MODE          equ 56
 
 E820_ENTRY_SIZE     equ 24
 E820_BASE           equ 0

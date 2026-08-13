@@ -22,8 +22,79 @@
                 global  vga_hide_cursor
                 global  vga_show_cursor
                 global  vga_putc_at
+                global  vga_use_framebuffer
+
+                extern  fb_init
+                extern  fb_putc_at
+                extern  fb_scroll
+                extern  fb_draw_cursor
 
                 section .text
+
+; ---------------------------------------------------------------------
+; vga_use_framebuffer -> EAX = 1 when the console moved to the graphics
+;                        display, 0 when it stayed in text mode.
+;
+;   Everything that has been printed so far is still sitting in the text
+;   buffer, so once the framebuffer is up the buffer is replayed onto it
+;   and the boot log appears in the window rather than being lost.
+; ---------------------------------------------------------------------
+vga_use_framebuffer:
+                ENTER
+                push    ebx
+                push    esi
+                push    edi
+
+                call    fb_init
+                test    eax, eax
+                jz      .stay_in_text
+
+                mov     dword [vga_graphics], 1
+
+                ; ---- replay the text buffer -------------------------
+                xor     ebx, ebx                ; row
+.next_row:
+                cmp     ebx, VGA_HEIGHT
+                jae     .replayed
+                xor     esi, esi                ; column
+.next_col:
+                cmp     esi, VGA_WIDTH
+                jae     .row_done
+
+                mov     eax, ebx
+                mov     edx, VGA_WIDTH
+                mul     edx
+                add     eax, esi
+                shl     eax, 1
+                mov     dx, [VGA_MEMORY + eax]  ; character and attribute
+
+                movzx   ecx, dh
+                push    ecx                     ; attr
+                push    esi                     ; col
+                push    ebx                     ; row
+                movzx   ecx, dl
+                push    ecx                     ; char
+                call    fb_putc_at
+                add     esp, 16
+
+                inc     esi
+                jmp     .next_col
+.row_done:
+                inc     ebx
+                jmp     .next_row
+
+.replayed:
+                call    update_hw_cursor
+                mov     eax, 1
+                jmp     .done
+
+.stay_in_text:
+                xor     eax, eax
+.done:
+                pop     edi
+                pop     esi
+                pop     ebx
+                LEAVE_RET
 
 ; ---------------------------------------------------------------------
 ; vga_init — clear the screen and park the cursor at the top left.
@@ -50,6 +121,10 @@ vga_clear:
                 rep     stosw
                 mov     dword [vga_row], 0
                 mov     dword [vga_col], 0
+                cmp     dword [vga_graphics], 0
+                je      .no_fb
+                call    repaint_from_text
+.no_fb:
                 call    update_hw_cursor
                 pop     ecx
                 pop     eax
@@ -131,6 +206,7 @@ vga_putc:
                 call    cursor_offset           ; -> EDI
                 mov     ah, [vga_color]
                 mov     [edi], ax
+                call    mirror_cursor_cell
                 inc     dword [vga_col]
                 jmp     .wrap_check
 
@@ -167,6 +243,7 @@ vga_putc:
                 mov     ah, [vga_color]
                 mov     al, ' '
                 mov     [edi], ax
+                call    mirror_cursor_cell
                 jmp     .update
 
 .wrap_check:
@@ -207,6 +284,20 @@ vga_putc_at:
                 mov     eax, [ebp + 8]
                 mov     ah, [vga_color]
                 mov     [edi], ax
+
+                ; The text buffer stays the record of what is on screen
+                ; even in graphics mode, so it is always written; the
+                ; framebuffer is painted from it.
+                cmp     dword [vga_graphics], 0
+                je      .done
+                movzx   eax, byte [vga_color]
+                push    eax
+                push    dword [ebp + 16]
+                push    dword [ebp + 12]
+                push    dword [ebp + 8]
+                call    fb_putc_at
+                add     esp, 16
+.done:
                 pop     edi
                 pop     ebp
                 ret
@@ -281,6 +372,17 @@ vga_scroll:
                 mov     al, ' '
                 rep     stosw
 
+                cmp     dword [vga_graphics], 0
+                je      .done
+                call    fb_scroll
+
+                ; The painted caret moved up with everything else, so
+                ; the record of where it is has to move with it or the
+                ; next erase will rub out the wrong cell.
+                cmp     dword [caret_row], 0
+                je      .done
+                dec     dword [caret_row]
+.done:
                 pop     eax
                 pop     ecx
                 pop     edi
@@ -304,9 +406,160 @@ vga_fill_row:
                 mov     ah, dl
                 mov     ecx, VGA_WIDTH
                 rep     stosw
+
+                cmp     dword [vga_graphics], 0
+                je      .done
+                push    dword [ebp + 8]
+                call    repaint_row
+                add     esp, 4
+.done:
                 pop     ecx
                 pop     edi
                 pop     ebp
+                ret
+
+; ---------------------------------------------------------------------
+; mirror_cursor_cell — paint the cell under the cursor onto the display.
+; ---------------------------------------------------------------------
+mirror_cursor_cell:
+                cmp     dword [vga_graphics], 0
+                je      .done
+                pushad
+                movzx   eax, byte [vga_color]
+                push    eax
+                push    dword [vga_col]
+                push    dword [vga_row]
+                call    cursor_offset
+                movzx   eax, byte [edi]
+                push    eax
+                call    fb_putc_at
+                add     esp, 16
+                popad
+.done:
+                ret
+
+; ---------------------------------------------------------------------
+; repaint_cell(row, col) — redraw one character from the text buffer.
+; ---------------------------------------------------------------------
+repaint_cell:
+                push    ebp
+                mov     ebp, esp
+                pushad
+
+                mov     ebx, [ebp + 8]          ; row
+                mov     esi, [ebp + 12]         ; col
+                cmp     ebx, VGA_HEIGHT
+                jae     .done
+                cmp     esi, VGA_WIDTH
+                jae     .done
+
+                mov     eax, ebx
+                mov     edx, VGA_WIDTH
+                mul     edx
+                add     eax, esi
+                shl     eax, 1
+                mov     dx, [VGA_MEMORY + eax]
+
+                movzx   ecx, dh
+                push    ecx                     ; attribute
+                push    esi                     ; column
+                push    ebx                     ; row
+                movzx   ecx, dl
+                push    ecx                     ; character
+                call    fb_putc_at
+                add     esp, 16
+.done:
+                popad
+                pop     ebp
+                ret
+
+; ---------------------------------------------------------------------
+; mirror_cursor_caret — move the drawn caret to the current position.
+;
+;   The hardware cursor is invisible in graphics mode, so the caret has
+;   to be painted.  The cell it used to sit in is redrawn from the text
+;   buffer, which erases the old one.
+; ---------------------------------------------------------------------
+mirror_cursor_caret:
+                cmp     dword [vga_graphics], 0
+                je      .done
+                pushad
+
+                push    dword [caret_col]
+                push    dword [caret_row]
+                call    repaint_cell
+                add     esp, 8
+
+                mov     eax, [vga_row]
+                mov     [caret_row], eax
+                mov     eax, [vga_col]
+                mov     [caret_col], eax
+
+                push    dword 1                 ; on
+                push    dword [vga_col]
+                push    dword [vga_row]
+                call    fb_draw_cursor
+                add     esp, 12
+
+                popad
+.done:
+                ret
+
+; ---------------------------------------------------------------------
+; repaint_row(row) — redraw one text row onto the display.
+; ---------------------------------------------------------------------
+repaint_row:
+                push    ebp
+                mov     ebp, esp
+                pushad
+
+                mov     ebx, [ebp + 8]
+                cmp     ebx, VGA_HEIGHT
+                jae     .done
+                xor     esi, esi
+.next:
+                cmp     esi, VGA_WIDTH
+                jae     .done
+
+                mov     eax, ebx
+                mov     edx, VGA_WIDTH
+                mul     edx
+                add     eax, esi
+                shl     eax, 1
+                mov     dx, [VGA_MEMORY + eax]
+
+                movzx   ecx, dh
+                push    ecx
+                push    esi
+                push    ebx
+                movzx   ecx, dl
+                push    ecx
+                call    fb_putc_at
+                add     esp, 16
+
+                inc     esi
+                jmp     .next
+.done:
+                popad
+                pop     ebp
+                ret
+
+; ---------------------------------------------------------------------
+; repaint_from_text — redraw the whole console from the text buffer.
+; ---------------------------------------------------------------------
+repaint_from_text:
+                pushad
+                xor     ebx, ebx
+.next_row:
+                cmp     ebx, VGA_HEIGHT
+                jae     .done
+                push    ebx
+                call    repaint_row
+                add     esp, 4
+                inc     ebx
+                jmp     .next_row
+.done:
+                popad
                 ret
 
 ; ---------------------------------------------------------------------
@@ -356,6 +609,7 @@ update_hw_cursor:
                 pop     edx
                 pop     ecx
                 pop     eax
+                call    mirror_cursor_caret
                 ret
 
 ; ---------------------------------------------------------------------
@@ -400,3 +654,12 @@ vga_color:      db      VGA_ATTR(COLOR_LGREY, COLOR_BLACK)
                 alignb  4
 vga_row:        resd    1
 vga_col:        resd    1
+
+; Set once the framebuffer console has taken over.  Until then every
+; drawing call is a plain text buffer write.
+vga_graphics:   resd    1
+
+; Where the painted caret currently sits, so it can be rubbed out
+; again when it moves.
+caret_row:      resd    1
+caret_col:      resd    1

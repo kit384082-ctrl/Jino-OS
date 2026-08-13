@@ -28,6 +28,8 @@ KOBJS := \
 	$(BUILD)/pic.o      \
 	$(BUILD)/pit.o      \
 	$(BUILD)/vga.o      \
+	$(BUILD)/fb.o       \
+	$(BUILD)/font.o     \
 	$(BUILD)/serial.o   \
 	$(BUILD)/string.o   \
 	$(BUILD)/printf.o   \
