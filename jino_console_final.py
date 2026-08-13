@@ -32,6 +32,7 @@ class JinoFS:
         self.files = {}
         self.dirs = set(["/"])
         self.cwd = "/"
+        self._tree_valid = False
         self._init_defaults()
         self.load_persist()
     def _init_defaults(self):
@@ -52,6 +53,7 @@ class JinoFS:
         mkfile("/templates/static/index.html","<html><body><h1>{{SERVER_NAME}} - Static</h1><p>Port {{PORT}} Root {{ROOT}}</p></body></html>")
     def persist_file(self): return "/tmp/jino_fs_persist.json"
     def load_persist(self):
+        self._tree_valid = False
         try:
             pf=self.persist_file()
             if os.path.exists(pf):
@@ -108,6 +110,7 @@ class JinoFS:
         if p in self.dirs: return {"type":"dir","size":4096,"mtime":time.time(),"perms":"rwxr-xr-x","path":p}
         return None
     def write(self,path,content,perms=None):
+        self._tree_valid = False
         p=self.norm(path); dirn=os.path.dirname(p); self.ensure_dir(dirn); now=time.time()
         old_perms=self.files.get(p,{}).get("perms","rw-r--r--")
         self.files[p]={"content":content,"mtime":now,"perms":perms or old_perms}
@@ -128,6 +131,7 @@ class JinoFS:
             if d!=p and d.startswith(prefix): return False,"Dir not empty"
         self.dirs.remove(p); self.save_persist(); return True,"OK"
     def rm(self,path):
+        self._tree_valid = False
         p=self.norm(path)
         if p in self.files: del self.files[p]; self.save_persist(); return True
         return False
@@ -137,6 +141,7 @@ class JinoFS:
         if self.is_dir(d): d=d.rstrip("/")+ "/"+os.path.basename(s)
         self.write(d,self.files[s]["content"]); return True,d
     def mv(self,src,dst):
+        self._tree_valid = False
         s=self.norm(src); d=self.norm(dst)
         if s in self.files:
             if self.is_dir(d): d=d.rstrip("/")+ "/"+os.path.basename(s)
@@ -155,6 +160,39 @@ class JinoFS:
         return False,"not found"
 
 # Server Runtime
+
+    def _build_tree(self):
+        import collections
+        self._tree_subdirs = collections.defaultdict(set)
+        self._tree_files = collections.defaultdict(set)
+        for d in self.dirs:
+            if d != "/":
+                import os
+                self._tree_subdirs[os.path.dirname(d)].add(os.path.basename(d))
+        for fpath in self.files:
+            import os
+            self._tree_files[os.path.dirname(fpath)].add(os.path.basename(fpath))
+        self._tree_valid = True
+
+    def get_files_with_prefix(self, prefix):
+        if not hasattr(self, '_tree_valid') or not self._tree_valid:
+            self._build_tree()
+
+        prefix = self.norm(prefix)
+        res = []
+        if prefix in self.files:
+            res.append(prefix)
+
+        # if prefix is a directory
+        if prefix in self.dirs:
+            def traverse(d):
+                for base in self._tree_files.get(d, []):
+                    res.append(d.rstrip('/') + '/' + base if d != '/' else '/' + base)
+                for sub in self._tree_subdirs.get(d, []):
+                    traverse(d.rstrip('/') + '/' + sub if d != '/' else '/' + sub)
+            traverse(prefix)
+        return res
+
 class ServerInstance:
     def __init__(self, config, fs_ref, jdb_ref):
         self.name=config.get("name")
@@ -183,8 +221,10 @@ class ServerInstance:
         # copy files from virtual root to real
         # if root is /www, copy all files under /www to real_root
         root_norm=self.fs.norm(self.root)
-        for fpath, fdata in self.fs.files.items():
-            if fpath.startswith(root_norm):
+        for fpath in self.fs.get_files_with_prefix(root_norm):
+            fdata = self.fs.files[fpath]
+            # to keep original logic, we don't need 'if fpath.startswith' because get_files_with_prefix guarantees it
+            if True:
                 rel=fpath[len(root_norm):].lstrip("/")
                 if not rel: rel="index.html"
                 # if root_norm == file itself
