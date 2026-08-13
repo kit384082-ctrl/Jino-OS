@@ -3,7 +3,7 @@
 Jino OS v2.1 CONSOLE EDITION - No GUI + Easy Server Installer + 100+ Commands
 Merged: v1.0 commands + v2.0 server manager
 """
-import os, sys, time, json, shlex, base64, re, random, math
+import os, sys, time, json, shlex, base64, re, random, math, ast, operator
 import shutil, datetime, subprocess, socket, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -390,14 +390,14 @@ class JinoOS:
         print(f"""{C_BOLD}{C_GREEN}Jino OS v2.1 - Help{C_RESET}
 {C_YELLOW}100+ команд + удобная установка серверов{C_RESET}
 
-{Srv Installer:}
+Srv Installer:
   jpkg list | jpkg search <term> | jpkg install <pkg> [--port P] [--name N] [--root /path]
   jpkg info <pkg> | jpkg uninstall <name>
   srv list | srv start <name> | srv stop <name> | srv restart <name> | srv status [name] | srv logs <name> | srv delete <name>
   srv new (wizard) | srv quick <pkg> (install+start) | srv create <name> --template static --port 8080 --root /www
   deploy <path> --port 8000 --name mysite | serve | web
 
-{Srv Examples:}
+Srv Examples:
   jpkg install nginx --port 8080
   srv start nginx
   curl http://localhost:8080/api/status
@@ -409,7 +409,7 @@ class JinoOS:
 
   deploy . --port 9000 --name quicksite
 
-{Base Commands:}
+Base Commands:
   FS: ls ll la pwd cd cat bat more less touch mkdir rmdir rm cp mv find tree du df stat
   TEXT: echo write edit head tail wc grep sort uniq cut hexdump base64 strings diff rev
   SYS: ver uname whoami hostname date time cal clear history env mem ps top uptime sleep reboot exit
@@ -768,11 +768,53 @@ class JinoOS:
         elif args[0]=="list":
             for k,v in self.jdb.items(): print(f"{k}={v}")
         elif args[0]=="del" and len(args)>=2: self.jdb.pop(args[1],None); print("Del")
+
+    def _safe_eval(self, expr):
+        allowed_operators = {
+            ast.Add: operator.add,
+            ast.Sub: operator.sub,
+            ast.Mult: operator.mul,
+            ast.Div: operator.truediv,
+            ast.Pow: operator.pow,
+            ast.BitXor: operator.pow,
+            ast.USub: operator.neg,
+            ast.UAdd: operator.pos,
+        }
+        allowed_funcs = {
+            'sin': math.sin,
+            'cos': math.cos,
+            'sqrt': math.sqrt,
+            'pi': math.pi,
+        }
+        def evaluate(node):
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float)):
+                    return node.value
+                raise ValueError("Only numbers are allowed")
+            elif isinstance(node, ast.BinOp):
+                return allowed_operators[type(node.op)](evaluate(node.left), evaluate(node.right))
+            elif isinstance(node, ast.UnaryOp):
+                return allowed_operators[type(node.op)](evaluate(node.operand))
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id in allowed_funcs and callable(allowed_funcs[node.func.id]):
+                    args = [evaluate(arg) for arg in node.args]
+                    return allowed_funcs[node.func.id](*args)
+                raise ValueError(f"Function not allowed")
+            elif isinstance(node, ast.Name):
+                if node.id in allowed_funcs and not callable(allowed_funcs[node.id]):
+                    return allowed_funcs[node.id]
+                raise ValueError(f"Variable not allowed: {node.id}")
+            else:
+                raise ValueError(f"Unsupported syntax")
+        tree = ast.parse(expr, mode='eval')
+        return evaluate(tree.body)
+
     def cmd_calc(self,args):
+
         if not args: print("Usage: calc expr"); return
         expr=" ".join(args).replace("^","**")
-        try: print(eval(expr,{"__builtins__":{}},{"sin":math.sin,"cos":math.cos,"sqrt":math.sqrt,"pi":math.pi}))
-        except Exception as e: print(e)
+        try: print(self._safe_eval(expr))
+        except Exception as e: print(f"Error: {e}")
     def cmd_cowsay(self,args):
         t=" ".join(args) or "Jino"
         print(f"< {t} >\n \\   ^__^\n  \\  (oo)\\_______\n     (__)\\       )\\/\\\n         ||----w |\n         ||     ||")
