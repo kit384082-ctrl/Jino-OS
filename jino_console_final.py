@@ -85,20 +85,29 @@ class JinoFS:
     def list_dir(self,path=None):
         if path is None: path=self.cwd
         path=self.norm(path)
-        if path not in self.dirs:
-            if not any(f.startswith(path+"/") for f in self.files) and path not in self.files: return None
-        dirs=[]; files=[]
+
+        prefix = path if path == "/" else path + "/"
+        dirs = set()
+        files = set()
+
         for d in self.dirs:
-            if d==path: continue
-            if os.path.dirname(d)==path: dirs.append(os.path.basename(d))
-        for fpath in self.files:
-            if os.path.dirname(fpath)==path: files.append(os.path.basename(fpath))
-        prefix=path if path=="/" else path+"/"
+            if d == path: continue
+            if d.startswith(prefix):
+                rel = d[len(prefix):].split("/")[0]
+                if rel: dirs.add(rel)
+
         for fpath in self.files:
             if fpath.startswith(prefix):
-                rel=fpath[len(prefix):].split("/")[0]
-                if "/" in fpath[len(prefix):] and rel not in dirs: dirs.append(rel)
-        return sorted(dirs), sorted(files)
+                rel = fpath[len(prefix):].split("/")[0]
+                if "/" in fpath[len(prefix):]:
+                    if rel: dirs.add(rel)
+                else:
+                    if rel: files.add(rel)
+
+        if path not in self.dirs and not dirs and not files and path not in self.files:
+            return None
+
+        return sorted(list(dirs)), sorted(list(files))
     def read(self,path):
         p=self.norm(path)
         return self.files[p]["content"] if p in self.files else None
