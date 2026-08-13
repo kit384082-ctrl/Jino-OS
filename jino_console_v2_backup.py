@@ -3,7 +3,7 @@
 Jino OS v1.0 CONSOLE EDITION - No GUI, Pure Terminal, 80+ Commands
 FullStack DOS-like OS written in Python
 """
-import os, sys, time, json, shlex, base64, re, random, math, hashlib
+import os, sys, ast, time, json, shlex, base64, re, random, math, hashlib
 import shutil, textwrap, datetime, platform, subprocess
 from pathlib import Path
 from collections import Counter
@@ -22,7 +22,60 @@ C_BLUE="\033[94m"
 C_BOLD="\033[1m"
 C_DIM="\033[2m"
 
+
+class SafeMathEvaluator:
+    def __init__(self, allowed_names):
+        self.allowed_names = allowed_names
+
+    def eval(self, expr):
+        try:
+            tree = ast.parse(expr, mode='eval')
+            return self._eval_node(tree.body)
+        except Exception as e:
+            raise ValueError(f"Invalid expression: {e}")
+
+    def _eval_node(self, node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        elif isinstance(node, ast.Name):
+            if node.id in self.allowed_names:
+                return self.allowed_names[node.id]
+            raise ValueError(f"Name '{node.id}' not allowed")
+        elif isinstance(node, ast.UnaryOp):
+            operand = self._eval_node(node.operand)
+            if isinstance(node.op, ast.USub):
+                return -operand
+            elif isinstance(node.op, ast.UAdd):
+                return +operand
+            raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
+        elif isinstance(node, ast.BinOp):
+            left = self._eval_node(node.left)
+            right = self._eval_node(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            elif isinstance(node.op, ast.Sub):
+                return left - right
+            elif isinstance(node.op, ast.Mult):
+                return left * right
+            elif isinstance(node.op, ast.Div):
+                return left / right
+            elif isinstance(node.op, ast.FloorDiv):
+                return left // right
+            elif isinstance(node.op, ast.Mod):
+                return left % right
+            elif isinstance(node.op, ast.Pow):
+                if right > 1000:
+                    raise ValueError("Power too large")
+                return left ** right
+            raise ValueError(f"Unsupported binary operator: {type(node.op).__name__}")
+        elif isinstance(node, ast.Call):
+            func = self._eval_node(node.func)
+            args = [self._eval_node(arg) for arg in node.args]
+            return func(*args)
+        raise ValueError(f"Unsupported node type: {type(node).__name__}")
+
 class JinoFS:
+
     def __init__(self):
         self.files = {} # path -> {content, mtime, perms, size}
         self.dirs = set(["/"])
@@ -1350,7 +1403,8 @@ eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
         # replace ^ with **
         expr=expr.replace("^","**")
         try:
-            result=eval(expr, {"__builtins__": {}}, allowed)
+            evaluator = SafeMathEvaluator(allowed)
+            result=evaluator.eval(expr)
             print(f"{C_GREEN}{result}{C_RESET}")
             self.last_exit_code=0
             self.jdb["last_calc"]=str(result)
