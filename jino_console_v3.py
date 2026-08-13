@@ -1168,12 +1168,10 @@ URL форматы:
                     print(f"> {data[:200]}")
                 print(f">")
 
-            # Create context for https (ignore cert for simplicity)
+            # Create context for https
             ctx=None
             if parsed.scheme=="https":
                 ctx=ssl.create_default_context()
-                ctx.check_hostname=False
-                ctx.verify_mode=ssl.CERT_NONE
 
             # Handle redirects manually if follow_redirects else let urllib handle? We'll implement simple
             opener=urllib.request.build_opener(urllib.request.HTTPRedirectHandler() if follow_redirects else urllib.request.HTTPHandler())

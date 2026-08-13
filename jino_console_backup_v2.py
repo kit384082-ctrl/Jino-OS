@@ -871,7 +871,7 @@ class JinoOS:
             if verbose: print(f"* Trying {parsed.hostname}:{parsed.port or 80}...\n* Connected\n> {method} {parsed.path} HTTP/1.1\n> Host: {parsed.hostname}")
             ctx=None
             if parsed.scheme=="https":
-                ctx=ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
+                ctx=ssl.create_default_context()
             response=urllib.request.urlopen(req, timeout=timeout, context=ctx)
             body=response.read().decode(errors='replace')
             if verbose: print(f"< HTTP/1.1 {response.status} {response.reason}\n<")
