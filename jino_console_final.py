@@ -5,6 +5,7 @@ Jino OS v2.0 CONSOLE EDITION - No GUI + Easy Server Installer
 Build: 2026-07-13 SERVER EDITION
 """
 import os, sys, time, json, shlex, base64, re, random, math, hashlib
+import ast, operator
 import shutil, textwrap, datetime, platform, subprocess, socket, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -1106,8 +1107,42 @@ class JinoOS:
         if not args: print("Usage: calc expr"); return
         expr=" ".join(args).replace("^","**")
         allowed={"sin":math.sin,"cos":math.cos,"sqrt":math.sqrt,"pi":math.pi}
-        try: print(eval(expr, {"__builtins__":{}}, allowed))
-        except Exception as e: print(f"error {e}")
+        binops = {
+            ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+            ast.Div: operator.truediv, ast.FloorDiv: operator.floordiv,
+            ast.Mod: operator.mod, ast.Pow: operator.pow,
+        }
+        unops = {ast.UAdd: operator.pos, ast.USub: operator.neg}
+
+        def _eval(node):
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float)): return node.value
+                raise ValueError("Only numbers are allowed")
+            elif isinstance(node, ast.BinOp):
+                left = _eval(node.left)
+                right = _eval(node.right)
+                if isinstance(node.op, ast.Pow) and (isinstance(right, (int, float)) and right > 100):
+                    raise ValueError("Exponent too large")
+                return binops[type(node.op)](left, right)
+            elif isinstance(node, ast.UnaryOp):
+                return unops[type(node.op)](_eval(node.operand))
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name):
+                    func = allowed.get(node.func.id)
+                    if func and callable(func):
+                        return func(*[_eval(arg) for arg in node.args])
+                raise ValueError("Unsupported function call")
+            elif isinstance(node, ast.Name):
+                if node.id in allowed and not callable(allowed[node.id]):
+                    return allowed[node.id]
+                raise ValueError(f"Unknown variable {node.id}")
+            raise ValueError("Unsupported expression")
+
+        try:
+            tree = ast.parse(expr, mode='eval')
+            print(_eval(tree.body))
+        except Exception as e:
+            print(f"error {e}")
     def cmd_cowsay(self,args):
         text=" ".join(args) or "Jino Server Edition"
         print(f" _{'_'*len(text)}_\n< {text} >\n -{'-'*len(text)}-\n        \\   ^__^\n         \\  (oo)\\_______\n            (__)\\       )\\/\\\n                ||----w |\n                ||     ||")
