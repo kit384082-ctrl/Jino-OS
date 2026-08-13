@@ -8,6 +8,37 @@ import shutil, textwrap, datetime, platform, subprocess
 from pathlib import Path
 from collections import Counter
 
+def _safe_math_eval(expr, allowed_names):
+    import ast
+    import operator
+    allowed_ops = {
+        ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+        ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Mod: operator.mod,
+        ast.USub: operator.neg, ast.UAdd: operator.pos
+    }
+    def _eval(node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        elif type(node).__name__ == "Num":
+            return node.n
+        elif isinstance(node, ast.Name):
+            if node.id in allowed_names:
+                return allowed_names[node.id]
+            raise ValueError(f"Unknown name: {node.id}")
+        elif isinstance(node, ast.BinOp):
+            return allowed_ops[type(node.op)](_eval(node.left), _eval(node.right))
+        elif isinstance(node, ast.UnaryOp):
+            return allowed_ops[type(node.op)](_eval(node.operand))
+        elif isinstance(node, ast.Call):
+            func = _eval(node.func)
+            args = [_eval(arg) for arg in node.args]
+            return func(*args)
+        else:
+            raise TypeError(f"Unsupported syntax: {type(node).__name__}")
+    return _eval(ast.parse(expr, mode='eval').body)
+
+
+
 VERSION = "1.0 Console Edition"
 BUILD = "2026-07-13 NO-GUI BUILD"
 
@@ -1350,7 +1381,7 @@ eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST> mtu 1500
         # replace ^ with **
         expr=expr.replace("^","**")
         try:
-            result=eval(expr, {"__builtins__": {}}, allowed)
+            result=_safe_math_eval(expr, allowed)
             print(f"{C_GREEN}{result}{C_RESET}")
             self.last_exit_code=0
             self.jdb["last_calc"]=str(result)

@@ -9,6 +9,37 @@ import shutil, textwrap, datetime, platform, subprocess, socket, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+def _safe_math_eval(expr, allowed_names):
+    import ast
+    import operator
+    allowed_ops = {
+        ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul,
+        ast.Div: operator.truediv, ast.Pow: operator.pow, ast.Mod: operator.mod,
+        ast.USub: operator.neg, ast.UAdd: operator.pos
+    }
+    def _eval(node):
+        if isinstance(node, ast.Constant):
+            return node.value
+        elif type(node).__name__ == "Num":
+            return node.n
+        elif isinstance(node, ast.Name):
+            if node.id in allowed_names:
+                return allowed_names[node.id]
+            raise ValueError(f"Unknown name: {node.id}")
+        elif isinstance(node, ast.BinOp):
+            return allowed_ops[type(node.op)](_eval(node.left), _eval(node.right))
+        elif isinstance(node, ast.UnaryOp):
+            return allowed_ops[type(node.op)](_eval(node.operand))
+        elif isinstance(node, ast.Call):
+            func = _eval(node.func)
+            args = [_eval(arg) for arg in node.args]
+            return func(*args)
+        else:
+            raise TypeError(f"Unsupported syntax: {type(node).__name__}")
+    return _eval(ast.parse(expr, mode='eval').body)
+
+
+
 VERSION = "2.0 Console Server Edition"
 BUILD = "2026-07-13 SERVER"
 
@@ -1106,7 +1137,7 @@ class JinoOS:
         if not args: print("Usage: calc expr"); return
         expr=" ".join(args).replace("^","**")
         allowed={"sin":math.sin,"cos":math.cos,"sqrt":math.sqrt,"pi":math.pi}
-        try: print(eval(expr, {"__builtins__":{}}, allowed))
+        try: print(_safe_math_eval(expr, allowed))
         except Exception as e: print(f"error {e}")
     def cmd_cowsay(self,args):
         text=" ".join(args) or "Jino Server Edition"
