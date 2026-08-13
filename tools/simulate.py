@@ -115,7 +115,7 @@ class Machine:
         memory_mb: int = 64,
         ata: bool = False,
     ):
-        self.disk = bytearray(image)
+        self.disk = bytearray(self._boot_image(image))
         self.memory_mb = memory_mb
         self.ata_enabled = ata
         self.serial_out = bytearray()
@@ -185,6 +185,50 @@ class Machine:
             self.uc.reg_write(reg, 0)
         self.uc.reg_write(UC_X86_REG_ESP, 0x7C00)
         self.uc.reg_write(UC_X86_REG_DX, 0x80)  # boot drive
+
+    # ------------------------------------------------------- boot media
+    @staticmethod
+    def _boot_image(image: bytes) -> bytes:
+        """The medium the firmware would actually hand the bootloader.
+
+        A raw disk image is used as it stands.  An ISO is what a CD
+        drive is given, and the firmware does not hand that to the boot
+        sector: it reads the El Torito catalogue, finds the emulated
+        floppy inside and presents *that* as drive 00h.  Doing the same
+        here means the ISO is booted the way a real machine boots it,
+        rather than merely being checked for well-formed fields.
+        """
+        sector = 2048
+        if len(image) < 17 * sector or image[16 * sector : 16 * sector + 6] != (
+            b"\x01CD001"
+        ):
+            return image  # not an ISO, so a raw disk image
+
+        # The boot record descriptor points at the boot catalogue.
+        boot_record = image[17 * sector : 18 * sector]
+        if boot_record[:6] != b"\x00CD001":
+            raise ValueError("the ISO has no El Torito boot record")
+        catalog_lba = int.from_bytes(boot_record[71:75], "little")
+
+        catalog = image[catalog_lba * sector : catalog_lba * sector + 64]
+        if catalog[0] != 0x01 or catalog[30:32] != b"\x55\xaa":
+            raise ValueError("the boot catalogue is not valid")
+        if sum(int.from_bytes(catalog[i : i + 2], "little") for i in range(0, 32, 2)) & 0xFFFF:
+            raise ValueError("the boot catalogue checksum is wrong")
+
+        entry = catalog[32:64]
+        if not entry[0] & 0x88:
+            raise ValueError("the default boot entry is not bootable")
+
+        media = entry[1]
+        sizes = {0x01: 1228800, 0x02: 1474560, 0x03: 2949120}
+        if media not in sizes:
+            raise ValueError(
+                f"boot media type {media:#x} is not floppy emulation"
+            )
+
+        start = int.from_bytes(entry[8:12], "little") * sector
+        return image[start : start + sizes[media]]
 
     # ------------------------------------------------------------ CMOS
     def _default_cmos(self):

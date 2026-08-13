@@ -15,12 +15,14 @@ with paging, and lands you in an interactive shell.
   interval timer              [ ok ]
   physical memory manager     [ ok ]
   paging                      [ ok ]
+  video                       [ ok ]
   kernel heap                 [ ok ]
   ps/2 keyboard               [ ok ]
   real time clock             [ ok ]
   cpu identification          [ ok ]
   ata storage                 [ ok ]
   jinofs filesystem           [ ok ]
+  ring 3 user mode            [ ok ]
   task scheduler              [ ok ]
 
 cpu: vendor GenuineIntel
@@ -28,20 +30,31 @@ cpu: family 6, model 60, stepping 4
 cpu: features fpu tsc msr pae apic pge cmov mmx fxsr sse sse2 pse
 ata0: JINO VIRTUAL DISK, 2880 sectors (1 MiB)
 jinofs: 1 file(s), 512 bytes used, 261632 bytes free
-memory: 65148 KiB usable (16287 pages), kernel 1248 KiB, heap 1048576 bytes
+memory: 65148 KiB usable (16287 pages), kernel 1284 KiB, heap 1048576 bytes
 
 system ready.
 
 jino>
 ```
 
+![the Jino-OS console](docs/screenshot.png)
+
+The console above is the real framebuffer: the kernel asks the BIOS for
+1024x768x32 at boot and paints an 80x25 window onto a desktop. The text
+buffer at `0xB8000` stays the record of what is on screen and the
+pixels are drawn from it, so if the mode set fails the system carries
+on in plain text mode.
+
 ## Building and running
 
 ```sh
 make            # assemble everything and produce build/jino.img
+make iso        # also produce a bootable CD image, build/jino.iso
+make release    # both images, their sizes and a SHA256SUMS file
 make run        # boot the image under QEMU
+make run-iso    # boot the CD image under QEMU
 make sim        # boot it under the bundled software emulator
-make test       # run the test suite (146 tests)
+make test       # run the test suite (170 tests)
 make info       # print the sizes of each component
 make clean
 ```
@@ -64,18 +77,34 @@ raw sectors rather than a filesystem:
 sudo dd if=build/jino.img of=/dev/sdX bs=512 conv=fsync
 ```
 
+`make iso` wraps that same image in a CD image for firmware that will
+not boot a raw floppy, and for burning:
+
+```sh
+make iso
+wodim dev=/dev/sr0 build/jino.iso      # or burn build/jino.iso any other way
+```
+
+The disk image is exactly 1.44 MiB, so the ISO uses El Torito **floppy
+emulation**: the firmware presents the image inside it as drive 00h and
+the bootloader runs unchanged. Nothing in `boot/` knows it is on a CD.
+
 ## How it boots
 
 | Stage | Mode | What happens |
 | --- | --- | --- |
 | `boot/stage1.asm` | 16-bit real | The 512-byte MBR. Sets up a stack, reads stage2 off the boot device (INT 13h LBA extensions, with a CHS fallback) and jumps to it. |
-| `boot/stage2.asm` | 16-bit → 32-bit | Queries the memory map (E820, with E801/INT 12h fallbacks), opens the A20 gate, copies the kernel above 1 MiB through unreal mode, installs a flat GDT and enters protected mode. |
+| `boot/stage2.asm` | 16-bit → 32-bit | Queries the memory map (E820, with E801/INT 12h fallbacks), opens the A20 gate, copies the kernel above 1 MiB through unreal mode, sets a 1024×768×32 VBE mode, installs a flat GDT and enters protected mode. |
 | `kernel/entry.asm` | 32-bit protected | Clears `.bss`, checks the CPU is at least a 486, and calls `kmain`. |
 | `kernel/kmain.asm` | 32-bit protected | Initialises every subsystem in dependency order, then starts the shell. |
 
 The loader leaves a small hand-off block at physical `0x500`
-(`boot/bootinfo.inc`) describing the boot drive, the memory map and
-where the kernel was placed.
+(`boot/bootinfo.inc`) describing the boot drive, the memory map, where
+the kernel was placed and the framebuffer's address and geometry.
+
+The video mode is set in stage2 because VBE needs real mode BIOS calls,
+and a mode set failure is not fatal: the framebuffer address is left
+zero and the kernel keeps the text console.
 
 ### Disk layout
 
@@ -134,7 +163,7 @@ python3 tools/simulate.py disk.img --keys 'write notes hello\r' --ata --persist
 | Heap | `heap.asm` | First-fit free list with boundary tags, splitting on allocation and coalescing on free. |
 | Tasks | `task.asm` | Round-robin kernel threads, cooperative (`yield`) and preemptive (timer driven). |
 | User mode | `user.asm`, `syscall.asm`, `userprog.asm` | Drops to ring 3 through an `iret`, returns through `int 0x80`, and validates every pointer that arrives from user space. |
-| Console | `vga.asm` | 80×25 text mode: scrolling, colour attributes, hardware cursor. |
+| Console | `vga.asm`, `fb.asm` | 80×25 text mode, mirrored into a 1024×768×32 framebuffer console drawn on a desktop when VBE is available. |
 | Serial | `serial.asm` | 16550 UART on COM1, so the whole session can be captured headless. |
 | Keyboard | `keyboard.asm` | Scan code set 1, modifier tracking, extended keys, circular buffer, line editing. |
 | Storage | `ata.asm` | 28-bit LBA PIO reads and writes, with IDENTIFY parsing. |
@@ -194,7 +223,11 @@ system actually prints and does — not on the source.
 make test
 ```
 
-It covers the image layout and boot signature, each bootloader stage,
+It covers the image layout and boot signature, the CD image (including
+booting it the way firmware does, by pulling the emulated floppy out of
+the El Torito catalogue), the framebuffer console (comparing the pixels
+on screen against the font table, not merely checking something was
+drawn), each bootloader stage,
 the hand-off block, every subsystem reporting ready, protected mode and
 paging being live, the shell commands, heap behaviour (including reuse
 and coalescing after a free), the ATA driver against an emulated drive,
@@ -222,10 +255,11 @@ python3 tools/simulate.py build/jino.img --keys 'mem\rps\r' --timer 5000 --ata -
 boot/     stage1.asm  stage2.asm  bootinfo.inc
 kernel/   entry.asm  kmain.asm  and the subsystems listed above
           kernel.inc  linker.ld
-tools/    mkimage.py  simulate.py
+tools/    mkimage.py  mkiso.py  simulate.py
+          screenshot.py  mkfont.py
 tests/    test_boot.py  test_kernel.py  test_shell.py
           test_disk.py  test_tasks.py   test_fs.py
-          test_user.py
+          test_user.py  test_video.py   test_iso.py
 ```
 
 ## Licence

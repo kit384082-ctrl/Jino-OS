@@ -49,6 +49,7 @@ KOBJS := \
 	$(BUILD)/shell.o
 
 IMG        := $(BUILD)/jino.img
+ISO        := $(BUILD)/jino.iso
 KERNEL_BIN := $(BUILD)/kernel.bin
 STAGE1     := $(BUILD)/stage1.bin
 STAGE2     := $(BUILD)/stage2.bin
@@ -58,7 +59,7 @@ STAGE2_LBA     := 1
 STAGE2_SECTORS := 8
 KERNEL_LBA     := 9
 
-.PHONY: all clean run test image dirs info
+.PHONY: all clean run run-iso test image iso dirs info release
 
 all: image
 
@@ -97,16 +98,30 @@ $(IMG): $(STAGE1) $(STAGE2) $(KERNEL_BIN) $(TOOLS)/mkimage.py
 		--kernel $(KERNEL_BIN) --kernel-lba $(KERNEL_LBA) \
 		--out $@
 
+# ------------------------------------------------------------------ iso
+# A CD image, for firmware that will not boot a raw floppy image and for
+# the "burn it and try it on real hardware" case.  The disk image is
+# exactly 1.44 MiB, so it goes in under El Torito floppy emulation and
+# the bootloader needs no changes at all.
+iso: $(ISO)
+
+$(ISO): $(IMG) $(TOOLS)/mkiso.py
+	@$(PYTHON) $(TOOLS)/mkiso.py --image $(IMG) --out $@
+
 info: $(IMG)
 	@echo "stage1 : $$(stat -c%s $(STAGE1)) bytes"
 	@echo "stage2 : $$(stat -c%s $(STAGE2)) bytes"
 	@echo "kernel : $$(stat -c%s $(KERNEL_BIN)) bytes ($$(( ( $$(stat -c%s $(KERNEL_BIN)) + 511 ) / 512 )) sectors)"
 	@echo "image  : $$(stat -c%s $(IMG)) bytes"
+	@test -f $(ISO) && echo "iso    : $$(stat -c%s $(ISO)) bytes" || true
 
 # ------------------------------------------------------------ emulate
 QEMU ?= qemu-system-i386
 run: $(IMG)
 	$(QEMU) -drive format=raw,file=$(IMG),index=0,if=ide -m 64 -serial stdio
+
+run-iso: $(ISO)
+	$(QEMU) -cdrom $(ISO) -boot d -m 64 -serial stdio
 
 # Software emulator (Unicorn) — works without QEMU installed
 sim: $(IMG)
@@ -119,6 +134,14 @@ test: $(IMG)
 		exit 1; \
 	}
 	$(PYTHON) -m pytest -q tests
+
+# -------------------------------------------------------------- release
+# Everything a release needs: both images, their sizes and a checksum
+# file, so what was published can be told apart from what was rebuilt.
+release: $(IMG) $(ISO)
+	@$(MAKE) --no-print-directory info
+	@cd $(BUILD) && sha256sum jino.img jino.iso > SHA256SUMS
+	@echo "checksums written to $(BUILD)/SHA256SUMS"
 
 clean:
 	rm -rf $(BUILD)
